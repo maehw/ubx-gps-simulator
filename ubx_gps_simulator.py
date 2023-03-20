@@ -159,6 +159,7 @@ def send_ack_ack(ser, cls_id, msg_id):
     cs = calc_checksum(body)
     msg = sync + body + cs
     print(f"<<< Sending ACK-ACK response: {msg}")
+    print()  # Improve readability of log by adding an empty line
     ser.write(msg)
 
 
@@ -192,13 +193,19 @@ def process_message(ser, msg):
         # always send ACK-ACK (for now); FIXME: may want to implement different behaviour
         if msg['id'] == b'\x01':
             process_cfg_msg(msg)
+        elif msg['id'] == b'\x04':
+            process_cfg_rst(msg)
         elif msg['id'] == b'\x34':
             process_cfg_rinv(msg)
         else:
             print(f"    {get_msg_code(msg)}")
         send_ack_ack(ser, msg['class'], msg['id'])
+    elif msg['class'] == b'\x0b' and msg['id'] == b'\x50':
+        process_aid_alp(msg)
+        send_ack_ack(ser, msg['class'], msg['id'])  # allow to send next chunk directly
     else:
         print(f"    {get_msg_code(msg)}")
+        print()  # Improve readability of log by adding an empty line
 
 
 def process_cfg_msg(msg):
@@ -211,13 +218,13 @@ def process_cfg_msg(msg):
     pl_rate = msg['payload'][2:]
     pl_msg = {'class': pl_msg_class.to_bytes(1, 'little'), 'id': pl_msg_id.to_bytes(1, 'little')}
     pl_msg_code = get_msg_code(pl_msg)
-    print(f"    CGG-MSG for class 0x{pl_msg_class:02X}, ID 0x{pl_msg_id:02X} ({pl_msg_code}).")
+    print(f"    {get_msg_code(msg)} for class 0x{pl_msg_class:02X}, ID 0x{pl_msg_id:02X} ({pl_msg_code}).")
     if payload_len == 2:
-        print("    Poll request.")
+        print("      Poll request.")
     elif payload_len == 3:
-        print(f"    Rate for current target: {pl_rate}")
+        print(f"      Rate for current target: {pl_rate}")
     elif payload_len == 8:
-        print(f"    Rates for 6 I/O targets: {pl_rate}")
+        print(f"      Rates for 6 I/O targets: {pl_rate}")
 
 
 def process_cfg_rinv(msg):
@@ -225,7 +232,7 @@ def process_cfg_rinv(msg):
     payload_len = len(msg['payload'])
     assert payload_len == 0 or payload_len >= 2, "Unexpected payload length"
 
-    print(f"    CGG-RINV (remote inventory). ", end="")
+    print(f"    {get_msg_code(msg)} (remote inventory). ", end="")
     if payload_len == 0:
         print("Poll request.")
     elif payload_len >= 2:
@@ -233,6 +240,41 @@ def process_cfg_rinv(msg):
         data = msg['payload'][1:]
         print(f"Flags: binary={1 if flags & 0x2 else 0}, dump={1 if flags & 0x1 else 0}. ", end="")
         print(f"Data: {data}.")
+
+
+def process_cfg_rst(msg):
+    assert msg['class'] == b'\x06' and msg['id'] == b'\x04', "Unexpected call."
+    payload_len = len(msg['payload'])
+    assert payload_len == 4, "Unexpected payload length"
+
+    print(f"    {get_msg_code(msg)} (reset receiver/ clear backup data structure command).")
+    nav_bbr_mask = msg['payload'][0:2]
+    nav_bbr_mask_special = ''
+    if nav_bbr_mask == b'\x00\x00':
+        nav_bbr_mask_special = ' (hotstart)'
+    elif nav_bbr_mask == b'\x00\x01':
+        nav_bbr_mask_special = ' (warmstart)'
+    elif nav_bbr_mask == b'\xff\xff':
+        nav_bbr_mask_special = ' (coldstart)'
+    reset_mode = msg['payload'][2]
+    reserved1 = msg['payload'][3]
+    print(f"      navBbrMask: {nav_bbr_mask}{nav_bbr_mask_special}")
+    print(f"      resetMode:  {reset_mode}")
+    print(f"      reserved1:  {reserved1}")
+
+
+def process_aid_alp(msg):
+    assert msg['class'] == b'\x0b' and msg['id'] == b'\x50', "Unexpected call."
+    payload_len = len(msg['payload'])
+    assert payload_len % 2 == 0 or payload_len == 1, "Unexpected payload length (must be even-sized or 1)"
+    assert payload_len <= 700, "Payload too large"  # would exceed the receiver's internal buffering capabilities
+
+    print(f"    {get_msg_code(msg)} (ALP file data transfer to the receiver)")
+    if payload_len == 1:
+        assert(msg['payload'][0] == b'\x00')
+        print("      Marking end of transfer.")
+    else:
+        print(f"      ALP file data: {msg['payload']}")
 
 
 def run():
