@@ -30,17 +30,22 @@ Example: Debugging the [OpenBikeSensor](https://www.openbikesensor.org/) [firmwa
 > python3 ubx_gps_simulator.py /dev/tty.usbserial-DEADBEEF
 Opened serial port '/dev/tty.usbserial-DEADBEEF' with a baudrate of 115200.
 >>> Received VALID message: class 0x06, ID 0x34 w/o payload.
-    CGG-RINV (remote inventory). Poll request.
+    CFG-RINV (remote inventory). Poll request.
 <<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x064Bk'
 >>> Received VALID message: class 0x06, ID 0x04 w/ payload b'\x00\x00\x02\x00' (length: 4).
-    CFG-RST
+    CFG-RST (reset receiver/ clear backup data structure command).
+      navBbrMask: b'\x00\x00' (hotstart)
+      resetMode:  2
+      reserved1:  0
 <<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x04\x12;'
 >>> Received VALID message: class 0x06, ID 0x01 w/ payload b'\x0b2\x00\x00\x00\x00\x00\x00' (length: 8).
-    CGG-MSG for class 0x0B, ID 0x32 (AID-ALPSRV).
-    Rates for 6 I/O targets: b'\x00\x00\x00\x00\x00\x00'
+    CFG-MSG for class 0x0B, ID 0x32 (AID-ALPSRV).
+      Rates for 6 I/O targets: b'\x00\x00\x00\x00\x00\x00'
 <<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x01\x0f8'
 >>> Received VALID message: class 0x0B, ID 0x50 w/o payload.
-    AID-ALP
+    AID-ALP (ALP file data transfer to the receiver)
+      ALP file data: b''
+<<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x0bPc\x91'
 >>> Received VALID message: class 0x0A, ID 0x04 w/o payload.
     MON-VER
 >>> Received VALID message: class 0x0A, ID 0x09 w/o payload.
@@ -51,23 +56,23 @@ Opened serial port '/dev/tty.usbserial-DEADBEEF' with a baudrate of 115200.
     CFG-NAV5
 <<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06$2['
 >>> Received VALID message: class 0x06, ID 0x34 w/o payload.
-    CGG-RINV (remote inventory). Poll request.
+    CFG-RINV (remote inventory). Poll request.
 <<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x064Bk'
 >>> Received VALID message: class 0x06, ID 0x01 w/ payload b'\x01 \x00\x01\x00\x00\x00\x00' (length: 8).
-    CGG-MSG for class 0x01, ID 0x20 (NAV-TIMEGPS).
-    Rates for 6 I/O targets: b'\x00\x01\x00\x00\x00\x00'
+    CFG-MSG for class 0x01, ID 0x20 (NAV-TIMEGPS).
+      Rates for 6 I/O targets: b'\x00\x01\x00\x00\x00\x00'
 <<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x01\x0f8'
 >>> Received VALID message: class 0x06, ID 0x01 w/ payload b'\x01\x03\x00\x02\x00\x00\x00\x00' (length: 8).
-    CGG-MSG for class 0x01, ID 0x03 (NAV-STATUS).
-    Rates for 6 I/O targets: b'\x00\x02\x00\x00\x00\x00'
+    CFG-MSG for class 0x01, ID 0x03 (NAV-STATUS).
+      Rates for 6 I/O targets: b'\x00\x02\x00\x00\x00\x00'
 <<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x01\x0f8'
 >>> Received VALID message: class 0x06, ID 0x01 w/ payload b'\n\t\x00\x02\x00\x00\x00\x00' (length: 8).
-    CGG-MSG for class 0x0A, ID 0x09 (MON-HW).
-    Rates for 6 I/O targets: b'\x00\x02\x00\x00\x00\x00'
+    CFG-MSG for class 0x0A, ID 0x09 (MON-HW).
+      Rates for 6 I/O targets: b'\x00\x02\x00\x00\x00\x00'
 <<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x01\x0f8'
 ```
 
-From the logging console of the OBS firmware (running on the ESP32):
+From the logging console of the OBS firmware (running on the ESP32), without having any peripheral connected:
 
 ```
 [I][gps.cpp:278] setBaud(): GPS startup already 115200
