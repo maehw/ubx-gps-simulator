@@ -2,8 +2,116 @@ import argparse
 import serial
 from enum import Enum
 
+messages = {
+    b'\x01': {
+        'class_name': 'NAV',
+        b'\x01': {'code': 'POSECEF'},
+        b'\x02': {'code': 'POSLLH'},
+        b'\x03': {'code': 'STATUS'},
+        b'\x04': {'code': 'DOP'},
+        b'\x06': {'code': 'SOL'},
+        b'\x11': {'code': 'VELECEF'},
+        b'\x12': {'code': 'VELNED'},
+        b'\x20': {'code': 'TIMEGPS'},
+        b'\x21': {'code': 'TIMEUTC'},
+        b'\x22': {'code': 'NAVCLOCK'},
+        b'\x30': {'code': 'SVINFO'},
+        b'\x31': {'code': 'DGPS'},
+        b'\x32': {'code': 'SBAS'},
+        b'\x40': {'code': 'EFKSTATUS'},
+        b'\x60': {'code': 'AOPSTATUS'},
+    },
+    b'\x02': {
+        'class_name': 'RXM',
+        b'\x10': {'code': 'RAW'},
+        b'\x11': {'code': 'SFRB'},
+        b'\x20': {'code': 'SVSI'},
+        b'\x30': {'code': 'ALM'},
+        b'\x31': {'code': 'EPH'},
+        b'\x41': {'code': 'PMREQ'},
+    },
+    b'\x04': {
+        'class_name': 'INF',
+        b'\x00': {'code': 'ERROR'},
+        b'\x01': {'code': 'WARNING'},
+        b'\x02': {'code': 'NOTICE'},
+        b'\x03': {'code': 'TEST'},
+        b'\x04': {'code': 'DEBUG'},
+    },
+    b'\x05': {
+        'class_name': 'ACK',
+        b'\x00': {'code': 'NAK'},
+        b'\x01': {'code': 'ACK'},
+    },
+    b'\x06': {
+        'class_name': 'CFG',
+        b'\x00': {'code': 'PRT'},
+        b'\x01': {'code': 'MSG'},
+        b'\x02': {'code': 'INF'},
+        b'\x04': {'code': 'RST'},
+        b'\x06': {'code': 'DAT'},
+        b'\x07': {'code': 'TP'},
+        b'\x08': {'code': 'RATE'},
+        b'\x09': {'code': 'CFG'},
+        b'\x0E': {'code': 'FXN'},
+        b'\x11': {'code': 'RXM'},
+        b'\x12': {'code': 'EKF'},
+        b'\x13': {'code': 'ANT'},
+        b'\x16': {'code': 'SBAS'},
+        b'\x17': {'code': 'NMEA'},
+        b'\x1B': {'code': 'USB'},
+        b'\x1D': {'code': 'TMODE'},
+        b'\x22': {'code': 'NVS'},
+        b'\x23': {'code': 'NAVX5'},
+        b'\x24': {'code': 'NAV5'},
+        b'\x29': {'code': 'ESFGWT'},
+        b'\x31': {'code': 'TP5'},
+        b'\x32': {'code': 'PM'},
+        b'\x34': {'code': 'RINV'},
+        b'\x39': {'code': 'ITFM'},
+        b'\x3B': {'code': 'PM2'},
+        b'\x3D': {'code': 'TMODE2'},
+    },
+    b'\x0A': {
+        'class_name': 'MON',
+        b'\x02': {'code': 'IO'},
+        b'\x04': {'code': 'VER'},
+        b'\x06': {'code': 'MSGPP'},
+        b'\x07': {'code': 'RXBUF'},
+        b'\x08': {'code': 'TXBUF'},
+        b'\x09': {'code': 'HW'},
+        b'\x0B': {'code': 'HW2'},
+        b'\x21': {'code': 'RXR'},
+    },
+    b'\x0B': {
+        'class_name': 'AID',
+        b'\x00': {'code': 'REQ'},
+        b'\x01': {'code': 'INI'},
+        b'\x02': {'code': 'HUI'},
+        b'\x10': {'code': 'DATA'},
+        b'\x30': {'code': 'ALM'},
+        b'\x31': {'code': 'EPH'},
+        b'\x32': {'code': 'ALPSRV'},
+        b'\x33': {'code': 'AOP'},
+        b'\x50': {'code': 'ALP'},
+    },
+    b'\x0D': {
+        'class_name': 'TIM',
+        b'\x01': {'code': 'TP'},
+        b'\x03': {'code': 'TM2'},
+        b'\x04': {'code': 'SVIN'},
+        b'\x06': {'code': 'VRFY'},
+    },
+    b'\x10': {
+        'class_name': 'ESF',
+        b'\x02': {'code': 'MEAS'},
+        b'\x10': {'code': 'STATUS'},
+    },
+}
+
 
 class RxState(Enum):
+    # states for receiver state machine to parse UBX packet structure
     WAIT_SYNC_1 = 1  # Wait 1st Sync Byte Rx'ed (0xB5)
     WAIT_SYNC_2 = 2  # Wait 2nd Sync Byte Rx'ed (0x62)
     WAIT_MSG_CLASS = 3  # Wait Message Class Byte Rx'ed
@@ -16,6 +124,7 @@ class RxState(Enum):
 
 
 def calc_checksum(block):
+    # calculate checksum using 8 bit Fletcher algorithm
     ck_a = 0
     ck_b = 0
     # print(f"  Calculating checksum for block {block}")
@@ -31,8 +140,9 @@ def calc_checksum(block):
 
 
 def has_valid_checksum(msg):
+    # calculate checksum and verify (i.e. compare with received one)
     # print(f"  Checking message {msg} for valid checksum")
-    calculated_checksum = calc_checksum(msg['class']+msg['id']+msg['len_raw']+msg['payload'])
+    calculated_checksum = calc_checksum(msg['class'] + msg['id'] + msg['len_raw'] + msg['payload'])
     if calculated_checksum != msg['checksum']:
         # print("  Checksum mismatch!")
         # print(f"  Calculated checksum: {calculated_checksum}")
@@ -43,6 +153,7 @@ def has_valid_checksum(msg):
 
 
 def send_ack_ack(ser, cls_id, msg_id):
+    # create ACK-ACK packet with message-specific class and ID
     sync = b'\xb5\x62'
     body = b'\x05\x01\x02\x00' + cls_id + msg_id
     cs = calc_checksum(body)
@@ -51,8 +162,25 @@ def send_ack_ack(ser, cls_id, msg_id):
     ser.write(msg)
 
 
+def get_msg_code(msg):
+    code = ''
+    if msg['class'] in messages:
+        code = messages[msg['class']]['class_name']
+        if msg['id'] in messages[msg['class']]:
+            code += "-" + messages[msg['class']][msg['id']]['code']
+        else:
+            code += "???"
+    else:
+        code = "???-???"
+    return code
+
 def process_message(ser, msg):
-    # print(f"Processing message {msg}")
+    # process message, i.e.
+    # - decode class and ID to a human-readable code
+    # - decode single messages in more detail
+    # - reply with ACK-ACK messages to CFG-* messages
+
+    # handle specific messages
     if msg['class'] == b'\x06':
         # "Configuration Input Messages: Set Dynamic Model, Set DOP Mask,
         # Set Baud Rate, etc."
@@ -61,62 +189,50 @@ def process_message(ser, msg):
         # receiver are acknowledged (with Message ACK-ACK) if processed
         # successfully, and rejected (with Message ACK-NAK) if processing the
         # message failed."
-        if msg['id'] == b'\x00':
-            print("    CFG-PRT")
-        elif msg['id'] == b'\x01':
-            print("    CFG-MSG")
-        elif msg['id'] == b'\x02':
-            print("    CFG-INF")
-        elif msg['id'] == b'\x04':
-            print("    CFG-RST")
-        elif msg['id'] == b'\x06':
-            print("    CFG-DAT")
-        elif msg['id'] == b'\x07':
-            print("    CFG-TP")
-        elif msg['id'] == b'\x08':
-            print("    CFG-RATE")
-        elif msg['id'] == b'\x09':
-            print("    CFG-CFG")
-        elif msg['id'] == b'\x11':
-            print("    CFG-RXM")
-        elif msg['id'] == b'\x16':
-            print("    CFG-SBAS")
-        elif msg['id'] == b'\x0E':
-            print("    CFG-FXN")
-        elif msg['id'] == b'\x12':
-            print("    CFG-EKF")
-        elif msg['id'] == b'\x13':
-            print("    CFG-ANT")
-        elif msg['id'] == b'\x17':
-            print("    CFG-NMEA")
-        elif msg['id'] == b'\x1B':
-            print("    CFG-USB")
-        elif msg['id'] == b'\x1D':
-            print("    CFG-TMODE")
-        elif msg['id'] == b'\x22':
-            print("    CFG-NVS")
-        elif msg['id'] == b'\x23':
-            print("    CFG-NAVX5")
-        elif msg['id'] == b'\x24':
-            print("    CFG-NAV5")
-        elif msg['id'] == b'\x29':
-            print("    CFG-ESFGWT")
-        elif msg['id'] == b'\x31':
-            print("    CFG-TP5")
-        elif msg['id'] == b'\x32':
-            print("    CFG-PM")
+        # always send ACK-ACK (for now); FIXME: may want to implement different behaviour
+        if msg['id'] == b'\x01':
+            process_cfg_msg(msg)
         elif msg['id'] == b'\x34':
-            print("    CFG-RINV")
-        elif msg['id'] == b'\x3B':
-            print("    CFG-PM2")
-        elif msg['id'] == b'\x3D':
-            print("    CFG-TMODE2")
-        elif msg['id'] == b'\x39':
-            print("    CFG-ITFM")
+            process_cfg_rinv(msg)
         else:
-            print("    CFG-???")
-        # always send ACK-ACK (for now)
+            print(f"    {get_msg_code(msg)}")
         send_ack_ack(ser, msg['class'], msg['id'])
+    else:
+        print(f"    {get_msg_code(msg)}")
+
+
+def process_cfg_msg(msg):
+    assert msg['class'] == b'\x06' and msg['id'] == b'\x01', "Unexpected call."
+    payload_len = len(msg['payload'])
+    assert payload_len in [2, 3, 8], "Unexpected CFG-MSG payload length (expecting 2, 3 or 8 bytes)."
+
+    pl_msg_class = msg['payload'][0]
+    pl_msg_id = msg['payload'][1]
+    pl_rate = msg['payload'][2:]
+    pl_msg = {'class': pl_msg_class.to_bytes(1, 'little'), 'id': pl_msg_id.to_bytes(1, 'little')}
+    pl_msg_code = get_msg_code(pl_msg)
+    print(f"    CGG-MSG for class 0x{pl_msg_class:02X}, ID 0x{pl_msg_id:02X} ({pl_msg_code}).")
+    if payload_len == 2:
+        print("    Poll request.")
+    elif payload_len == 3:
+        print(f"    Rate for current target: {pl_rate}")
+    elif payload_len == 8:
+        print(f"    Rates for 6 I/O targets: {pl_rate}")
+
+
+def process_cfg_rinv(msg):
+    assert msg['class'] == b'\x06' and msg['id'] == b'\x34', "Unexpected call."
+    payload_len = len(msg['payload'])
+    assert payload_len == 0 or payload_len >= 2, "Unexpected payload length"
+
+    print(f"    CGG-RINV (remote inventory). ", end="")
+    if payload_len == 0:
+        print("Poll request.")
+    elif payload_len >= 2:
+        flags = msg['payload'][0]
+        data = msg['payload'][1:]
+        print(f"Flags: binary={1 if flags & 0x2 else 0}, dump={1 if flags & 0x1 else 0}. ", end="")
+        print(f"Data: {data}.")
 
 
 def run():
@@ -205,7 +321,7 @@ def run():
             msg['checksum'] += rx_byte
             # print(f"Message checksum: {msg['checksum']}")
             if has_valid_checksum(msg):
-                print(f">>> Received VALID message class 0x{ord(msg['class']):02X}, "
+                print(f">>> Received VALID message: class 0x{ord(msg['class']):02X}, "
                       f"ID 0x{ord(msg['id']):02X} ", end="")
                 if msg['payload'] == b'':
                     print(f"w/o payload.")
