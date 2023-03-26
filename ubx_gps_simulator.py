@@ -3,6 +3,21 @@ import serial
 import pendulum
 from enum import Enum
 
+
+# TODO
+# - class DynamicPlatformModel(Enum):
+#   portable (default), stationary etc.
+# - class NavigationInputFilter(Enum):
+#   fixMode (default), fixAlt etc.
+# - class NavigationOutputFilter(...)
+# - current configuration (volatile) vs
+#   default configuration (non-volatile) vs
+#   permanent configuration (non-volatile)
+#   (e.g. by using an external configuration file to load and save)
+# - class StartupMode(Enum):
+#   cold start, warm start, hot start (depending on ephemeris data)
+# - remote inventory (binary or ASCII data)
+
 messages = {
     b'\x01': {
         'class_name': 'NAV',
@@ -133,21 +148,6 @@ class RxState(Enum):
     WAIT_MSG_CPLT = 9  # Wait 2nd Checksum Byte Rx'ed
 
 
-# TODO
-# - class DynamicPlatformModel(Enum):
-#   portable (default), stationary etc.
-# - class NavigationInputFilter(Enum):
-#   fixMode (default), fixAlt etc.
-# - class NavigationOutputFilter(...)
-# - current configuration (volatile) vs
-#   default configuration (non-volatile) vs
-#   permanent configuration (non-volatile)
-#   (e.g. by using an external configuration file to load and save)
-# - class StartupMode(Enum):
-#   cold start, warm start, hot start (depending on ephemeris data)
-# - remote inventory (binary or ASCII data)
-
-
 class UbxGpsSimulator:
     def __init__(self, serial_port_name, serial_baudrate, serial_blocking_read_timeout):
         # From the specification, section about "UART Ports":
@@ -158,7 +158,54 @@ class UbxGpsSimulator:
                                  baudrate=serial_baudrate,
                                  timeout=serial_blocking_read_timeout)
         print(f"Opened serial port '{self.ser.name}' with a baudrate of {self.ser.baudrate} and "
-              f"serial blocking read timeout of {serial_blocking_read_timeout}.")
+              f"serial blocking read timeout of {serial_blocking_read_timeout} seconds.")
+
+    @staticmethod
+    def print_protocol_id(identifier):
+        print("        Protocol ID: ", end="")
+        if identifier == 0:
+            print("UBX Protocol")
+        elif identifier == 1:
+            print("NMEA Protocol")
+        else:
+            print("Reserved")
+
+    @staticmethod
+    def calc_fletcher_checksum(block):
+        # calculate checksum using 8 bit Fletcher algorithm
+        ck_a = 0
+        ck_b = 0
+        # print(f"  Calculating checksum for block {block}")
+        for b in block:
+            byte_val = b  # struct.unpack('B', b)[0]
+            ck_a += byte_val
+            ck_a = ck_a & 0xFF
+            ck_b += ck_a
+            ck_b = ck_b & 0xFF
+            # print(f"  Byte value: {byte_val} (0x{byte_val:02X}), CK_A: {ck_a}
+            # (0x{ck_a:02X}), CK_B: {ck_b} (0x{ck_b:02X})")
+        return ck_a.to_bytes(1, 'little') + ck_b.to_bytes(1, 'little')
+
+    @staticmethod
+    def get_time_of_week(timestamp=None):
+        # calculate "GPS Millisecond Time of Week" ('itow')
+        # from timestamp or for just now
+        if timestamp is None:
+            timestamp = pendulum.now()
+        time_of_week = int(timestamp.format('x')) - int(timestamp.start_of('week').format('x'))
+        return time_of_week
+
+    @staticmethod
+    def get_msg_code(msg):
+        if msg['class'] in messages:
+            code = messages[msg['class']]['class_name']
+            if msg['id'] in messages[msg['class']]:
+                code += "-" + messages[msg['class']][msg['id']]['code']
+            else:
+                code += "???"
+        else:
+            code = "???-???"
+        return code
 
     def run(self):
         last_tx_time_millis = None
@@ -256,7 +303,7 @@ class UbxGpsSimulator:
             current_time = pendulum.now()
             current_time_millis = int(
                 current_time.format('x'))  # cannot just use the attribute 'microsends' due to wrap-around
-            current_time_of_week = get_time_of_week(current_time)
+            current_time_of_week = self.get_time_of_week(current_time)
 
             if last_tx_time_millis is not None:
                 time_diff = current_time_millis - last_tx_time_millis
@@ -289,7 +336,6 @@ class UbxGpsSimulator:
                 # - send_mon_hw(ser)  # FIXME: not implemented yet
 
                 last_tx_time_millis = current_time_millis  # just "now"
-        print("Done.")
 
     def process_message(self, msg):
         # process message, i.e.
@@ -309,35 +355,35 @@ class UbxGpsSimulator:
             if msg['id'] == b'\x00':
                 self.process_cfg_prt(msg)
             elif msg['id'] == b'\x01':
-                process_cfg_msg(msg)
+                self.process_cfg_msg(msg)
             elif msg['id'] == b'\x02':
-                process_cfg_inf(msg)
+                self.process_cfg_inf(msg)
             elif msg['id'] == b'\x04':
-                process_cfg_rst(msg)
+                self.process_cfg_rst(msg)
             elif msg['id'] == b'\x06':
-                process_cfg_cfg(msg)
+                self.process_cfg_cfg(msg)
             elif msg['id'] == b'\x07':
-                process_cfg_tp(msg)
+                self.process_cfg_tp(msg)
             elif msg['id'] == b'\x24':
-                process_cfg_nav5(msg)
+                self.process_cfg_nav5(msg)
             elif msg['id'] == b'\x34':
-                process_cfg_rinv(msg)
+                self.process_cfg_rinv(msg)
             else:
-                print(f"    {get_msg_code(msg)}")
+                print(f"    {self.get_msg_code(msg)}")
 
             # always send ACK-ACK (for now); FIXME: may want to implement different behaviour
-            send_ack_ack(self.ser, msg['class'], msg['id'])
+            self.send_ack_ack(self.ser, msg['class'], msg['id'])
         elif msg['class'] == b'\x0a' and msg['id'] == b'\x04':
-            process_mon_ver(msg)
+            self.process_mon_ver(msg)
         # elif msg['class'] == b'\x0b' and msg['id'] == b'\x01':
         #    process_aid_ini(msg)
         # elif msg['class'] == b'\x0b' and msg['id'] == b'\x32':
         #    process_aid_alpsrv(msg)
         elif msg['class'] == b'\x0b' and msg['id'] == b'\x50':
-            process_aid_alp(msg)
-            send_ack_ack(self.ser, msg['class'], msg['id'])  # allow to send next chunk directly
+            self.process_aid_alp(msg)
+            self.send_ack_ack(msg['class'], msg['id'])  # allow to send next chunk directly
         else:
-            print(f"    {get_msg_code(msg)} (unhandled)")
+            print(f"    {self.get_msg_code(msg)} (unhandled)")
             print()  # Improve readability of log by adding an empty line
 
     def process_cfg_prt(self, msg):
@@ -386,491 +432,421 @@ class UbxGpsSimulator:
             self.ser.baudrate = baudrate
             self.ser.reset_input_buffer()
 
-
-def calc_checksum(block):
-    # calculate checksum using 8 bit Fletcher algorithm
-    ck_a = 0
-    ck_b = 0
-    # print(f"  Calculating checksum for block {block}")
-    for b in block:
-        byte_val = b  # struct.unpack('B', b)[0]
-        ck_a += byte_val
-        ck_a = ck_a & 0xFF
-        ck_b += ck_a
-        ck_b = ck_b & 0xFF
-        # print(f"  Byte value: {byte_val} (0x{byte_val:02X}), CK_A: {ck_a}
-        # (0x{ck_a:02X}), CK_B: {ck_b} (0x{ck_b:02X})")
-    return ck_a.to_bytes(1, 'little') + ck_b.to_bytes(1, 'little')
-
-
-def has_valid_checksum(msg):
-    # calculate checksum and verify (i.e. compare with received one)
-    # print(f"  Checking message {msg} for valid checksum")
-    calculated_checksum = calc_checksum(msg['class'] + msg['id'] + msg['len_raw'] + msg['payload'])
-    if calculated_checksum != msg['checksum']:
-        # print("  Checksum mismatch!")
-        # print(f"  Calculated checksum: {calculated_checksum}")
-        # print(f"  Received checksum: {msg['checksum']}")
-        return False
-    else:
-        return True
-
-
-def send_ack_ack(ser, cls_id, msg_id):
-    # create ACK-ACK packet with message-specific class and ID
-    # (as reply to CFG input message)
-    send_ack_or_nak(ser, cls_id, msg_id, ack=True)
-
-
-def send_ack_nak(ser, cls_id, msg_id):
-    # create ACK-NAK packet with message-specific class and ID
-    # (as reply to CFG input message)
-    send_ack_or_nak(ser, cls_id, msg_id, ack=False)
-
-
-def send_ack_or_nak(ser, cls_id, msg_id, ack):
-    # create ACK-ACK or ACK-NAK packet with message-specific class and ID
-    # (as reply to CFG input message)
-    sync = b'\xb5\x62'
-    body = b'\x05'
-    # use different IDs for ACK-ACK and ACK-NAK
-    if ack:
-        body += b'\x01'
-    else:
-        body += b'\x00'
-    body += b'\x02\x00' + cls_id + msg_id
-    cs = calc_checksum(body)
-    msg = sync + body + cs
-    print(f"<<< Sending ACK-{'ACK' if ack else 'NAK'} response: {msg}")
-    print()  # Improve readability of log by adding an empty line
-    ser.write(msg)
-
-
-def get_time_of_week(timestamp=None):
-    # calculate "GPS Millisecond Time of Week" ('itow')
-    # from timestamp or for just now
-    if timestamp is None:
-        timestamp = pendulum.now()
-    time_of_week = int(timestamp.format('x')) - int(timestamp.start_of('week').format('x'))
-    return time_of_week
-
-
-def send_nav_posllh(ser,
-                    time_of_week=None,
-                    lon=0.0, lat=0.0,
-                    height=0.0, hmsl=0.0,
-                    hacc=0.0, vacc=0.0):
-    # create NAV-POSLLH Geodetic Position Solution message
-    # lon and lat are inputs in degrees, but as floats
-    sync = b'\xb5\x62'
-    msg = {'class': b'\x01', 'id': b'\x02'}
-    body = msg['class'] + msg['id'] + b'\x1C\x00'  # length of inner payload is 28 bytes
-    lon = int(lon * 1e7).to_bytes(4, 'little')
-    lat = int(lat * 1e7).to_bytes(4, 'little')
-    height = int(height * 1e3).to_bytes(4, 'little')  # from meters to cm
-    hmsl = int(hmsl).to_bytes(4, 'little')  # from meters to cm
-    hacc = int(hacc).to_bytes(4, 'little')
-    vacc = int(vacc).to_bytes(4, 'little')
-    if time_of_week is None:
-        time_of_week = get_time_of_week()
-    itow = time_of_week.to_bytes(4, 'little')
-    body += itow + lon + lat + height + hmsl + hacc + vacc  # FIXME: not all fields are SIGNED integers!
-    assert len(body) == (4+28), "Unexpected message body length."
-    cs = calc_checksum(body)
-    msg['payload'] = sync + body + cs
-    print(f"<<< Sending {get_msg_code(msg)} message: {msg['payload']}")
-    print()  # Improve readability of log by adding an empty line
-    ser.write(msg['payload'])
-
-
-def send_nav_dop(ser,
-                 time_of_week=None,
-                 gdop=0,
-                 pdop=0,
-                 tdop=0,
-                 vdop=0,
-                 hdop=0,
-                 ndop=0,
-                 edop=0):
-    sync = b'\xb5\x62'
-    body = b'\x01\x04\x12\x00'  # length is 18 bytes
-    gdop = int(gdop * 100).to_bytes(4, 'little')
-    pdop = int(pdop * 100).to_bytes(4, 'little')
-    tdop = int(tdop * 100).to_bytes(4, 'little')
-    vdop = int(vdop * 100).to_bytes(4, 'little')
-    hdop = int(hdop * 100).to_bytes(4, 'little')
-    ndop = int(ndop * 100).to_bytes(4, 'little')
-    edop = int(edop * 100).to_bytes(4, 'little')
-    if time_of_week is None:
-        time_of_week = get_time_of_week()
-    itow = time_of_week.to_bytes(4, 'little')
-    body += itow + gdop + pdop + tdop + vdop + hdop + edop  # FIXME: all fields are actually UNSIGNED integers!
-    assert len(body) == 18, "Unexpected message body length."
-    cs = calc_checksum(body)
-    msg = sync + body + cs
-    print(f"<<< Sending {get_msg_code(msg)} message: {msg}")
-    print()  # Improve readability of log by adding an empty line
-    ser.write(msg)
-
-
-def send_nav_status(ser,
-                    time_of_week=None,
-                    gps_fix=0,  # default: no fix
-                    nav_status_flags=0,
-                    fix_stat=0,
-                    nav_status_flags2=0,
-                    time_to_first_fix=0,
-                    startup_time=0):
-    sync = b'\xb5\x62'
-    body = b'\x01\x03\x10\x00'  # message body length is 16 bytes
-    gps_fix = int(gps_fix).to_bytes(4, 'little')
-    nav_status_flags = int(nav_status_flags).to_bytes(1, 'little')
-    fix_stat = int(fix_stat).to_bytes(1, 'little')
-    nav_status_flags2 = int(nav_status_flags2).to_bytes(1, 'little')
-    ttff = int(time_to_first_fix).to_bytes(4, 'little')
-    msss = int(startup_time).to_bytes(4, 'little')
-    if time_of_week is None:
-        time_of_week = get_time_of_week()
-    itow = time_of_week.to_bytes(4, 'little')
-    body += itow + gps_fix + nav_status_flags + fix_stat + nav_status_flags2 + ttff + msss
-    assert len(body) == 16, "Unexpected message body length."
-    cs = calc_checksum(body)
-    msg = sync + body + cs
-    print(f"<<< Sending {get_msg_code(msg)} message: {msg}")
-    print()  # Improve readability of log by adding an empty line
-    ser.write(msg)
-
-
-def send_nav_velned(ser,
-                    time_of_week=None,
-                    vel_n=0,
-                    vel_e=0,
-                    vel_d=0,
-                    speed=0,
-                    ground_speed=0,
-                    heading=0,
-                    speed_acc_est=0,
-                    heading_acc_est=0):
-    sync = b'\xb5\x62'
-    body = b'\x01\x12\x24\x00'  # message body length is 36 bytes
-    vel_n = int(vel_n).to_bytes(4, 'little')
-    vel_e = int(vel_e).to_bytes(4, 'little')
-    vel_d = int(vel_d).to_bytes(4, 'little')
-    speed = int(speed).to_bytes(4, 'little')
-    ground_speed = int(ground_speed).to_bytes(4, 'little')
-    heading = int(heading * 1e5).to_bytes(4, 'little')
-    speed_acc_est = int(speed_acc_est).to_bytes(4, 'little')
-    heading_acc_est = int(heading_acc_est * 1e5).to_bytes(4, 'little')
-    if time_of_week is None:
-        time_of_week = get_time_of_week()
-    itow = time_of_week.to_bytes(4, 'little')
-    body += itow + vel_n + vel_e + vel_d + speed + ground_speed + heading
-    body += speed_acc_est + heading_acc_est
-    assert len(body) == 36, "Unexpected message body length."
-    cs = calc_checksum(body)
-    msg = sync + body + cs
-    print(f"<<< Sending {get_msg_code(msg)} message: {msg}")
-    print()  # Improve readability of log by adding an empty line
-    ser.write(msg)
-
-
-def send_nav_timegps(ser,
-                     time_of_week=None,
-                     frac_time_of_week=0,
-                     week=0,
-                     leap_secs=0,
-                     valid=b'\x07',  # set time of week, week number and leap seconds to valid by default
-                     time_acc_est=0):
-    sync = b'\xb5\x62'
-    msg = {'class': b'\x01', 'id': b'\x20'}
-    body = msg['class'] + msg['id'] + b'\x10\x00'  # length of inner payload is 16 bytes
-    if time_of_week is None:
-        time_of_week = get_time_of_week()
-    frac_time_of_week = int(frac_time_of_week).to_bytes(4, 'little')
-    week = int(week).to_bytes(2, 'little')
-    leap_secs = int(leap_secs).to_bytes(1, 'little')
-    time_acc_est = int(time_acc_est).to_bytes(4, 'little')
-    itow = time_of_week.to_bytes(4, 'little')
-    body += itow + frac_time_of_week + week + leap_secs + valid + time_acc_est
-    assert len(body) == (4+16), "Unexpected message body length."
-    cs = calc_checksum(body)
-    msg['payload'] = sync + body + cs
-    print(f"<<< Sending {get_msg_code(msg)} message: {msg['payload']}")
-    print()  # Improve readability of log by adding an empty line
-    ser.write(msg['payload'])
-
-
-# def send_mon_hw(ser):
-#    # pin_sel = ...
-
-
-def get_msg_code(msg):
-    if msg['class'] in messages:
-        code = messages[msg['class']]['class_name']
-        if msg['id'] in messages[msg['class']]:
-            code += "-" + messages[msg['class']][msg['id']]['code']
+    def has_valid_checksum(self, msg):
+        # calculate checksum and verify (i.e. compare with received one)
+        # print(f"  Checking message {msg} for valid checksum")
+        calculated_checksum = self.calc_fletcher_checksum(msg['class'] + msg['id'] + msg['len_raw'] + msg['payload'])
+        if calculated_checksum != msg['checksum']:
+            # print("  Checksum mismatch!")
+            # print(f"  Calculated checksum: {calculated_checksum}")
+            # print(f"  Received checksum: {msg['checksum']}")
+            return False
         else:
-            code += "???"
-    else:
-        code = "???-???"
-    return code
+            return True
 
+    def send_ack_ack(self, cls_id, msg_id):
+        # create ACK-ACK packet with message-specific class and ID
+        # (as reply to CFG input message)
+        self.send_ack_or_nak(cls_id, msg_id, ack=True)
 
-def process_cfg_msg(msg):
-    assert msg['class'] == b'\x06' and msg['id'] == b'\x01', "Unexpected call."
-    payload_len = len(msg['payload'])
-    assert payload_len in [2, 3, 8], "Unexpected CFG-MSG payload length (expecting 2, 3 or 8 bytes)."
+    def send_ack_nak(self, cls_id, msg_id):
+        # create ACK-NAK packet with message-specific class and ID
+        # (as reply to CFG input message)
+        self.send_ack_or_nak(cls_id, msg_id, ack=False)
 
-    pl_msg_class = msg['payload'][0]
-    pl_msg_id = msg['payload'][1]
-    pl_rate = msg['payload'][2:]  # Send rate is relative to the event a message is registered on
-    pl_msg = {'class': pl_msg_class.to_bytes(1, 'little'), 'id': pl_msg_id.to_bytes(1, 'little')}
-    pl_msg_code = get_msg_code(pl_msg)
-    print(f"    {get_msg_code(msg)} for class 0x{pl_msg_class:02X}, ID 0x{pl_msg_id:02X} ({pl_msg_code}).")
-    if payload_len == 2:
-        print("      Poll message configuration.")
+    def send_ack_or_nak(self, cls_id, msg_id, ack):
+        # create ACK-ACK or ACK-NAK packet with message-specific class and ID
+        # (as reply to CFG input message)
+        sync = b'\xb5\x62'
+        body = b'\x05'
+        # use different IDs for ACK-ACK and ACK-NAK
+        if ack:
+            body += b'\x01'
+        else:
+            body += b'\x00'
+        body += b'\x02\x00' + cls_id + msg_id
+        cs = self.calc_fletcher_checksum(body)
+        msg = sync + body + cs
+        print(f"<<< Sending ACK-{'ACK' if ack else 'NAK'} response: {msg}")
+        print()  # Improve readability of log by adding an empty line
+        self.ser.write(msg)
+
+    def send_nav_posllh(self,
+                        time_of_week=None,
+                        lon=0.0, lat=0.0,
+                        height=0.0, hmsl=0.0,
+                        hacc=0.0, vacc=0.0):
+        # create NAV-POSLLH Geodetic Position Solution message
+        # lon and lat are inputs in degrees, but as floats
+        sync = b'\xb5\x62'
+        msg = {'class': b'\x01', 'id': b'\x02'}
+        body = msg['class'] + msg['id'] + b'\x1C\x00'  # length of inner payload is 28 bytes
+        lon = int(lon * 1e7).to_bytes(4, 'little')
+        lat = int(lat * 1e7).to_bytes(4, 'little')
+        height = int(height * 1e3).to_bytes(4, 'little')  # from meters to cm
+        hmsl = int(hmsl).to_bytes(4, 'little')  # from meters to cm
+        hacc = int(hacc).to_bytes(4, 'little')
+        vacc = int(vacc).to_bytes(4, 'little')
+        if time_of_week is None:
+            time_of_week = self.get_time_of_week()
+        itow = time_of_week.to_bytes(4, 'little')
+        body += itow + lon + lat + height + hmsl + hacc + vacc  # FIXME: not all fields are SIGNED integers!
+        assert len(body) == (4+28), "Unexpected message body length."
+        cs = self.calc_fletcher_checksum(body)
+        msg['payload'] = sync + body + cs
+        print(f"<<< Sending {self.get_msg_code(msg)} message: {msg['payload']}")
+        print()  # Improve readability of log by adding an empty line
+        self.ser.write(msg['payload'])
+
+    def send_nav_dop(self,
+                     time_of_week=None,
+                     gdop=0,
+                     pdop=0,
+                     tdop=0,
+                     vdop=0,
+                     hdop=0,
+                     ndop=0,
+                     edop=0):
+        sync = b'\xb5\x62'
+        body = b'\x01\x04\x12\x00'  # length is 18 bytes
+        gdop = int(gdop * 100).to_bytes(4, 'little')
+        pdop = int(pdop * 100).to_bytes(4, 'little')
+        tdop = int(tdop * 100).to_bytes(4, 'little')
+        vdop = int(vdop * 100).to_bytes(4, 'little')
+        hdop = int(hdop * 100).to_bytes(4, 'little')
+        ndop = int(ndop * 100).to_bytes(4, 'little')
+        edop = int(edop * 100).to_bytes(4, 'little')
+        if time_of_week is None:
+            time_of_week = self.get_time_of_week()
+        itow = time_of_week.to_bytes(4, 'little')
+        body += itow + gdop + pdop + tdop + vdop + hdop + edop  # FIXME: all fields are actually UNSIGNED integers!
+        assert len(body) == 18, "Unexpected message body length."
+        cs = self.calc_fletcher_checksum(body)
+        msg = sync + body + cs
+        print(f"<<< Sending {self.get_msg_code(msg)} message: {msg}")
+        print()  # Improve readability of log by adding an empty line
+        self.ser.write(msg)
+
+    def send_nav_status(self,
+                        time_of_week=None,
+                        gps_fix=0,  # default: no fix
+                        nav_status_flags=0,
+                        fix_stat=0,
+                        nav_status_flags2=0,
+                        time_to_first_fix=0,
+                        startup_time=0):
+        sync = b'\xb5\x62'
+        body = b'\x01\x03\x10\x00'  # message body length is 16 bytes
+        gps_fix = int(gps_fix).to_bytes(4, 'little')
+        nav_status_flags = int(nav_status_flags).to_bytes(1, 'little')
+        fix_stat = int(fix_stat).to_bytes(1, 'little')
+        nav_status_flags2 = int(nav_status_flags2).to_bytes(1, 'little')
+        ttff = int(time_to_first_fix).to_bytes(4, 'little')
+        msss = int(startup_time).to_bytes(4, 'little')
+        if time_of_week is None:
+            time_of_week = self.get_time_of_week()
+        itow = time_of_week.to_bytes(4, 'little')
+        body += itow + gps_fix + nav_status_flags + fix_stat + nav_status_flags2 + ttff + msss
+        assert len(body) == 16, "Unexpected message body length."
+        cs = self.calc_fletcher_checksum(body)
+        msg = sync + body + cs
+        print(f"<<< Sending {self.get_msg_code(msg)} message: {msg}")
+        print()  # Improve readability of log by adding an empty line
+        self.ser.write(msg)
+
+    def send_nav_velned(self,
+                        time_of_week=None,
+                        vel_n=0,
+                        vel_e=0,
+                        vel_d=0,
+                        speed=0,
+                        ground_speed=0,
+                        heading=0,
+                        speed_acc_est=0,
+                        heading_acc_est=0):
+        sync = b'\xb5\x62'
+        body = b'\x01\x12\x24\x00'  # message body length is 36 bytes
+        vel_n = int(vel_n).to_bytes(4, 'little')
+        vel_e = int(vel_e).to_bytes(4, 'little')
+        vel_d = int(vel_d).to_bytes(4, 'little')
+        speed = int(speed).to_bytes(4, 'little')
+        ground_speed = int(ground_speed).to_bytes(4, 'little')
+        heading = int(heading * 1e5).to_bytes(4, 'little')
+        speed_acc_est = int(speed_acc_est).to_bytes(4, 'little')
+        heading_acc_est = int(heading_acc_est * 1e5).to_bytes(4, 'little')
+        if time_of_week is None:
+            time_of_week = self.get_time_of_week()
+        itow = time_of_week.to_bytes(4, 'little')
+        body += itow + vel_n + vel_e + vel_d + speed + ground_speed + heading
+        body += speed_acc_est + heading_acc_est
+        assert len(body) == 36, "Unexpected message body length."
+        cs = self.calc_fletcher_checksum(body)
+        msg = sync + body + cs
+        print(f"<<< Sending {self.get_msg_code(msg)} message: {msg}")
+        print()  # Improve readability of log by adding an empty line
+        self.ser.write(msg)
+
+    def send_nav_timegps(self,
+                         time_of_week=None,
+                         frac_time_of_week=0,
+                         week=0,
+                         leap_secs=0,
+                         valid=b'\x07',  # set time of week, week number and leap seconds to valid by default
+                         time_acc_est=0):
+        sync = b'\xb5\x62'
+        msg = {'class': b'\x01', 'id': b'\x20'}
+        body = msg['class'] + msg['id'] + b'\x10\x00'  # length of inner payload is 16 bytes
+        if time_of_week is None:
+            time_of_week = self.get_time_of_week()
+        frac_time_of_week = int(frac_time_of_week).to_bytes(4, 'little')
+        week = int(week).to_bytes(2, 'little')
+        leap_secs = int(leap_secs).to_bytes(1, 'little')
+        time_acc_est = int(time_acc_est).to_bytes(4, 'little')
+        itow = time_of_week.to_bytes(4, 'little')
+        body += itow + frac_time_of_week + week + leap_secs + valid + time_acc_est
+        assert len(body) == (4+16), "Unexpected message body length."
+        cs = self.calc_fletcher_checksum(body)
+        msg['payload'] = sync + body + cs
+        print(f"<<< Sending {self.get_msg_code(msg)} message: {msg['payload']}")
+        print()  # Improve readability of log by adding an empty line
+        self.ser.write(msg['payload'])
+
+    def process_cfg_msg(self, msg):
+        assert msg['class'] == b'\x06' and msg['id'] == b'\x01', "Unexpected call."
+        payload_len = len(msg['payload'])
+        assert payload_len in [2, 3, 8], "Unexpected CFG-MSG payload length (expecting 2, 3 or 8 bytes)."
+
+        pl_msg_class = msg['payload'][0]
+        pl_msg_id = msg['payload'][1]
+        pl_rate = msg['payload'][2:]  # Send rate is relative to the event a message is registered on
+        pl_msg = {'class': pl_msg_class.to_bytes(1, 'little'), 'id': pl_msg_id.to_bytes(1, 'little')}
+        pl_msg_code = self.get_msg_code(pl_msg)
+        print(f"    {self.get_msg_code(msg)} for class 0x{pl_msg_class:02X}, ID 0x{pl_msg_id:02X} ({pl_msg_code}).")
+        if payload_len == 2:
+            print("      Poll message configuration.")
+            # TODO: should queue reply with message configuration (ACK comes first)
+        elif payload_len == 3:
+            print(f"      Rate for current target: {pl_rate}")
+            self.set_msg_rate(pl_msg_class, pl_msg_id, pl_rate)
+        elif payload_len == 8:
+            print(f"      Rates for 6 I/O targets: {pl_rate[0]}, {pl_rate[1]}(*), {pl_rate[2]},"
+                  f" {pl_rate[4]}, {pl_rate[4]}, {pl_rate[5]}")
+            # (where #0=DDC/I2C, #1=UART1, #2=UART2, #3=USB, #4=SPI, #5=reserved for future use)
+            # FIXME: select for the target we are currently running (assue #1)
+            self.set_msg_rate(pl_msg_class, pl_msg_id, pl_rate[1])
+
+    def set_msg_rate(self, msg_class, msg_id, rate):
+        # FIXME: implement
+        return
+
+    def process_cfg_cfg(self, msg):
+        assert msg['class'] == b'\x06' and msg['id'] == b'\x09', "Unexpected call."
+        payload_len = len(msg['payload'])
+        assert payload_len in [12, 13], "Unexpected CFG-CFG payload length (expecting 12 or 13 bytes)."
+
+        pl_clear_mask = msg['payload'][0:4]
+        pl_save_mask = msg['payload'][4:8]
+        pl_load_mask = msg['payload'][8:12]
+        pl_device_mask = None
+        if payload_len == 13:
+            pl_device_mask = msg['payload'][12]
+
+        print(f"    {self.get_msg_code(msg)} (Clear, Save and Load configurations) ", end="")
+        if pl_device_mask:
+            print(f"with optional device mask: 0x{ord(pl_device_mask):02X}.")
+        else:
+            print(f"w/o optional device mask.")
+        print(f"      Clear mask: {pl_clear_mask}")
+        print(f"      Save mask:  {pl_save_mask}")
+        print(f"      Load mask:  {pl_load_mask}")
+
+    def process_cfg_tp(self, msg):
+        assert msg['class'] == b'\x06' and msg['id'] == b'\x07', "Unexpected call."
+        payload_len = len(msg['payload'])
+        assert payload_len in [0, 20], "Unexpected CFG-CFG payload length (expecting 12 or 13 bytes)."
+
+        print(f"    {self.get_msg_code(msg)} (TimePulse Parameters)")
+        if payload_len == 0:
+            print("      Poll message configuration.")
+            # TODO: should queue reply with message configuration (ACK comes first)
+        else:
+            interval = int.from_bytes(msg['payload'][0:4], 'little', signed=False)
+            length = int.from_bytes(msg['payload'][4:8], 'little', signed=False)
+            status = msg['payload'][8]  # FIXME: should be signed integer
+            time_ref = msg['payload'][9]
+            flags = msg['payload'][10]  # bitmask
+            # byte #11 is reserved
+            ant_cable_delay = int.from_bytes(msg['payload'][12:14], 'little', signed=True)
+            rf_group_delay = int.from_bytes(msg['payload'][14:16], 'little', signed=True)
+            user_delay = int.from_bytes(msg['payload'][16:20], 'little', signed=True)
+            print(f"      Interval:          {interval} [us]")
+            print(f"      Length:            {length} [us]")
+            print(f"      Status:            {status}")
+            print(f"      Time reference:    {time_ref}")
+            print(f"      Flags:             0x{flags:02X}")
+            print(f"        Sync mode:       {flags & 0x01}")
+            print(f"      Ant. cable delay:  {ant_cable_delay} [ns]")
+            print(f"      RX RF group delay: {rf_group_delay} [ns]")
+            print(f"      User delay:        {user_delay} [ns]")
+
+    def process_cfg_nav5(self, msg):
+        assert msg['class'] == b'\x06' and msg['id'] == b'\x24', "Unexpected call."
+        payload_len = len(msg['payload'])
+        assert payload_len in [0, 36], "Unexpected CFG-CFG payload length (expecting 0 or 36 bytes)."
+
+        print(f"    {self.get_msg_code(msg)} (Navigation Engine Settings)")
+        if payload_len == 0:
+            print("      Poll message configuration.")
+            # TODO: should queue reply with message configuration (ACK comes first)
+        else:
+            mask = msg['payload'][0:2]
+            dyn_model = msg['payload'][2]
+            fix_mode = msg['payload'][3]
+            fixed_alt = msg['payload'][4:8]
+            fixed_alt_var = msg['payload'][8:12]
+            min_elev = msg['payload'][12]
+            dr_limit = msg['payload'][13]
+            pdop = msg['payload'][14:16]
+            tdop = msg['payload'][16:18]
+            pacc = msg['payload'][18:20]
+            tacc = msg['payload'][20:22]
+            static_hold_thres = msg['payload'][22]
+            dgps_timeout = msg['payload'][23]
+            # the remaining 12 bytes are currently marked reserved ("always set to zero")
+            print(f"      Mask: {mask}")
+            # TODO: continue...
+
+    def process_cfg_inf(self, msg):
+        assert msg['class'] == b'\x06' and msg['id'] == b'\x02', "Unexpected call."
+        payload_len = len(msg['payload'])
+        assert payload_len in [1, 10, 20, 30, 40, 50, 60], \
+            f"Unexpected {self.get_msg_code(msg)} payload length (expecting 1 or " \
+            f"multiple of 10 bytes)."
+
+        print(f"    {self.get_msg_code(msg)}")
+        num_targets = payload_len // 10
+        if payload_len == 1:
+            protocol_id = msg['payload'][0]
+            self.print_protocol_id(protocol_id)
+            # TODO: this is a poll request, i.e. excepts an answer
+        else:
+            for target_id in range(0, num_targets):  # blocks for "I/O target" aka "configuration unit"
+                print(f"      Target ID: #{target_id}")
+                protocol_id = msg['payload'][target_id*10 + 0]
+                self.print_protocol_id(protocol_id)
+                # inf_msg_msk = msg['payload'][target_id*10 + 4:(target_id+1)*10]  # 6 bytes
+                inf_msg_msk = msg['payload'][target_id * 10 + 5]  # only 1 byte contains information
+                enabled_info_msg = []
+                disabled_info_msg = []
+                if inf_msg_msk & 0x01 == 0x01:
+                    enabled_info_msg.append('ERROR')
+                else:
+                    disabled_info_msg.append('ERROR')
+                if inf_msg_msk & 0x02 == 0x02:
+                    enabled_info_msg.append('WARNING')
+                else:
+                    disabled_info_msg.append('WARNING')
+                if inf_msg_msk & 0x04 == 0x04:
+                    enabled_info_msg.append('NOTICE')
+                else:
+                    disabled_info_msg.append('NOTICE')
+                if inf_msg_msk & 0x08 == 0x08:
+                    enabled_info_msg.append('DEBUG')
+                else:
+                    disabled_info_msg.append('DEBUG')
+                if inf_msg_msk & 0x10 == 0x10:
+                    enabled_info_msg.append('TEST')
+                else:
+                    disabled_info_msg.append('TEST')
+                print(f"      Enabled messages:  {', '.join(enabled_info_msg) if enabled_info_msg else '(none)'}")
+                print(f"      Disabled messages: {', '.join(disabled_info_msg) if disabled_info_msg else '(none)'}")
+
+    def process_cfg_rinv(self, msg):
+        assert msg['class'] == b'\x06' and msg['id'] == b'\x34', "Unexpected call."
+        payload_len = len(msg['payload'])
+        assert payload_len == 0 or payload_len >= 2, "Unexpected payload length"
+
+        print(f"    {self.get_msg_code(msg)} (remote inventory) ", end="")
+        if payload_len == 0:
+            print("Poll request.")
+            # TODO: should queue reply with message configuration (ACK comes first)
+            # Note: the default is: flags=0x00, data="Notice: no data saved!"
+        elif payload_len >= 2:
+            flags = msg['payload'][0]
+            data = msg['payload'][1:31]  # "If N is greater than 30, the excess bytes are discarded"
+            is_binary = True if flags & 0x2 else False
+            dump = True if flags & 0x1 else False  # dump data at startup (does not work if flag 'binary' is set)
+            print(f"      Flags: binary={is_binary}, dump={dump}. ", end="")
+            print(f"      Data: {data}")
+            if not is_binary:
+                print(f"      Data (textual): {data.decode('ascii')}")
+
+    def process_cfg_rst(self, msg):
+        assert msg['class'] == b'\x06' and msg['id'] == b'\x04', "Unexpected call."
+        payload_len = len(msg['payload'])
+        assert payload_len == 4, "Unexpected payload length"
+
+        print(f"    {self.get_msg_code(msg)} (reset receiver/ clear backup data structure command).")
+        nav_bbr_mask = msg['payload'][0:2]
+        nav_bbr_mask_special = ''
+        # check three special values to append textual representation
+        if nav_bbr_mask == b'\x00\x00':
+            nav_bbr_mask_special = ' (hotstart)'
+        elif nav_bbr_mask == b'\x00\x01':
+            nav_bbr_mask_special = ' (warmstart)'
+        elif nav_bbr_mask == b'\xff\xff':
+            nav_bbr_mask_special = ' (coldstart)'
+        reset_mode = msg['payload'][2]
+        reserved1 = msg['payload'][3]
+        print(f"      navBbrMask: {nav_bbr_mask}{nav_bbr_mask_special}")
+        print(f"      resetMode:  {reset_mode}")
+        print(f"      reserved1:  {reserved1}")
+
+    def process_mon_ver(self, msg):
+        assert msg['class'] == b'\x0A' and msg['id'] == b'\x04', "Unexpected call."
+        payload_len = len(msg['payload'])
+        assert payload_len == 0, "Unexpected payload length"
+        # or payload_len >= 70 -- nope, does not make sense to support a setter
+
+        print(f"    {self.get_msg_code(msg)} (Receiver/Software/ROM Version, poll request)")
         # TODO: should queue reply with message configuration (ACK comes first)
-    elif payload_len == 3:
-        print(f"      Rate for current target: {pl_rate}")
-        set_msg_rate(pl_msg_class, pl_msg_id, pl_rate)
-    elif payload_len == 8:
-        print(f"      Rates for 6 I/O targets: {pl_rate[0]}, {pl_rate[1]}(*), {pl_rate[2]},"
-              f" {pl_rate[4]}, {pl_rate[4]}, {pl_rate[5]}")
-        # (where #0=DDC/I2C, #1=UART1, #2=UART2, #3=USB, #4=SPI, #5=reserved for future use)
-        # FIXME: select for the target we are currently running (assue #1)
-        set_msg_rate(pl_msg_class, pl_msg_id, pl_rate[1])
+        # sw_version = ... # 30 characters, NULL-terminated
+        # hw_version = ... # 10 characters, NULL-terminated
+        # rom_version = ... # 30 characters, NULL-terminated
+        # extension = ... # optional extension data
 
+    def process_aid_alpsrv(self, msg):
+        assert msg['class'] == b'\x0B' and msg['id'] == b'\x32', "Unexpected call."
+        payload_len = len(msg['payload'])
+        assert payload_len >= 8, "Unexpected payload length (must be >=8 bytes)"
+        print(f"    {self.get_msg_code(msg)} (ALP server/client AlmanacPlus data; TODO)")
+        # TODO/FIXME
 
-def set_msg_rate(msg_class, msg_id, rate):
-    # FIXME: implement
-    return
+    def process_aid_alp(self, msg):
+        assert msg['class'] == b'\x0b' and msg['id'] == b'\x50', "Unexpected call."
+        payload_len = len(msg['payload'])
+        assert payload_len % 2 == 0 or payload_len == 1, "Unexpected payload length (must be even-sized or 1)"
+        assert payload_len <= 700, "Payload too large"  # would exceed the receiver's internal buffering capabilities
 
-
-def process_cfg_cfg(msg):
-    assert msg['class'] == b'\x06' and msg['id'] == b'\x09', "Unexpected call."
-    payload_len = len(msg['payload'])
-    assert payload_len in [12, 13], "Unexpected CFG-CFG payload length (expecting 12 or 13 bytes)."
-
-    pl_clear_mask = msg['payload'][0:4]
-    pl_save_mask = msg['payload'][4:8]
-    pl_load_mask = msg['payload'][8:12]
-    pl_device_mask = None
-    if payload_len == 13:
-        pl_device_mask = msg['payload'][12]
-
-    print(f"    {get_msg_code(msg)} (Clear, Save and Load configurations) ", end="")
-    if pl_device_mask:
-        print(f"with optional device mask: 0x{ord(pl_device_mask):02X}.")
-    else:
-        print(f"w/o optional device mask.")
-    print(f"      Clear mask: {pl_clear_mask}")
-    print(f"      Save mask:  {pl_save_mask}")
-    print(f"      Load mask:  {pl_load_mask}")
-
-
-def process_cfg_tp(msg):
-    assert msg['class'] == b'\x06' and msg['id'] == b'\x07', "Unexpected call."
-    payload_len = len(msg['payload'])
-    assert payload_len in [0, 20], "Unexpected CFG-CFG payload length (expecting 12 or 13 bytes)."
-
-    print(f"    {get_msg_code(msg)} (TimePulse Parameters)")
-    if payload_len == 0:
-        print("      Poll message configuration.")
-        # TODO: should queue reply with message configuration (ACK comes first)
-    else:
-        interval = int.from_bytes(msg['payload'][0:4], 'little', signed=False)
-        length = int.from_bytes(msg['payload'][4:8], 'little', signed=False)
-        status = msg['payload'][8]  # FIXME: should be signed integer
-        time_ref = msg['payload'][9]
-        flags = msg['payload'][10]  # bitmask
-        # byte #11 is reserved
-        ant_cable_delay = int.from_bytes(msg['payload'][12:14], 'little', signed=True)
-        rf_group_delay = int.from_bytes(msg['payload'][14:16], 'little', signed=True)
-        user_delay = int.from_bytes(msg['payload'][16:20], 'little', signed=True)
-        print(f"      Interval:          {interval} [us]")
-        print(f"      Length:            {length} [us]")
-        print(f"      Status:            {status}")
-        print(f"      Time reference:    {length}")
-        print(f"      Flags:             0x{flags:02X}")
-        print(f"        Sync mode:       {flags & 0x01}")
-        print(f"      Ant. cable delay:  {ant_cable_delay} [ns]")
-        print(f"      RX RF group delay: {rf_group_delay} [ns]")
-        print(f"      User delay:        {user_delay} [ns]")
-
-
-def process_cfg_nav5(msg):
-    assert msg['class'] == b'\x06' and msg['id'] == b'\x24', "Unexpected call."
-    payload_len = len(msg['payload'])
-    assert payload_len in [0, 36], "Unexpected CFG-CFG payload length (expecting 0 or 36 bytes)."
-
-    print(f"    {get_msg_code(msg)} (Navigation Engine Settings)")
-    if payload_len == 0:
-        print("      Poll message configuration.")
-        # TODO: should queue reply with message configuration (ACK comes first)
-    else:
-        mask = msg['payload'][0:2]
-        dyn_model = msg['payload'][2]
-        fix_mode = msg['payload'][3]
-        fixed_alt = msg['payload'][4:8]
-        fixed_alt_var = msg['payload'][8:12]
-        min_elev = msg['payload'][12]
-        dr_limit = msg['payload'][13]
-        pdop = msg['payload'][14:16]
-        tdop = msg['payload'][16:18]
-        pacc = msg['payload'][18:20]
-        tacc = msg['payload'][20:22]
-        static_hold_thres = msg['payload'][22]
-        dgps_timeout = msg['payload'][23]
-        # the remaining 12 bytes are currently marked reserved ("always set to zero")
-        print(f"      Mask: {mask}")
-        # TODO: continue...
-
-
-def print_protocol_id(identifier):
-    print("        Protocol ID: ", end="")
-    if identifier == 0:
-        print("UBX Protocol")
-    elif identifier == 1:
-        print("NMEA Protocol")
-    else:
-        print("Reserved")
-
-
-def process_cfg_inf(msg):
-    assert msg['class'] == b'\x06' and msg['id'] == b'\x02', "Unexpected call."
-    payload_len = len(msg['payload'])
-    assert payload_len in [1, 10, 20, 30, 40, 50, 60], \
-        f"Unexpected {get_msg_code(msg)} payload length (expecting 1 or " \
-        f"multiple of 10 bytes)."
-
-    print(f"    {get_msg_code(msg)}")
-    num_targets = payload_len // 10
-    if payload_len == 1:
-        protocol_id = msg['payload'][0]
-        print_protocol_id(protocol_id)
-        # TODO: this is a poll request, i.e. excepts an answer
-    else:
-        for target_id in range(0, num_targets):  # blocks for "I/O target" aka "configuration unit"
-            print(f"      Target ID: #{target_id}")
-            protocol_id = msg['payload'][target_id*10 + 0]
-            print_protocol_id(protocol_id)
-            # inf_msg_msk = msg['payload'][target_id*10 + 4:(target_id+1)*10]  # 6 bytes
-            inf_msg_msk = msg['payload'][target_id * 10 + 5]  # only 1 byte contains information
-            enabled_info_msg = []
-            disabled_info_msg = []
-            if inf_msg_msk & 0x01 == 0x01:
-                enabled_info_msg.append('ERROR')
-            else:
-                disabled_info_msg.append('ERROR')
-            if inf_msg_msk & 0x02 == 0x02:
-                enabled_info_msg.append('WARNING')
-            else:
-                disabled_info_msg.append('WARNING')
-            if inf_msg_msk & 0x04 == 0x04:
-                enabled_info_msg.append('NOTICE')
-            else:
-                disabled_info_msg.append('NOTICE')
-            if inf_msg_msk & 0x08 == 0x08:
-                enabled_info_msg.append('DEBUG')
-            else:
-                disabled_info_msg.append('DEBUG')
-            if inf_msg_msk & 0x10 == 0x10:
-                enabled_info_msg.append('TEST')
-            else:
-                disabled_info_msg.append('TEST')
-            print(f"      Enabled messages:  {', '.join(enabled_info_msg) if enabled_info_msg else '(none)'}")
-            print(f"      Disabled messages: {', '.join(disabled_info_msg) if disabled_info_msg else '(none)'}")
-
-
-def process_cfg_rinv(msg):
-    assert msg['class'] == b'\x06' and msg['id'] == b'\x34', "Unexpected call."
-    payload_len = len(msg['payload'])
-    assert payload_len == 0 or payload_len >= 2, "Unexpected payload length"
-
-    print(f"    {get_msg_code(msg)} (remote inventory) ", end="")
-    if payload_len == 0:
-        print("Poll request.")
-        # TODO: should queue reply with message configuration (ACK comes first)
-        # Note: the default is: flags=0x00, data="Notice: no data saved!"
-    elif payload_len >= 2:
-        flags = msg['payload'][0]
-        data = msg['payload'][1:31]  # "If N is greater than 30, the excess bytes are discarded"
-        is_binary = True if flags & 0x2 else False
-        dump = True if flags & 0x1 else False  # dump data at startup (does not work if flag 'binary' is set)
-        print(f"      Flags: binary={is_binary}, dump={dump}. ", end="")
-        print(f"      Data: {data}")
-        if not is_binary:
-            print(f"      Data (textual): {data.decode('ascii')}")
-
-
-def process_cfg_rst(msg):
-    assert msg['class'] == b'\x06' and msg['id'] == b'\x04', "Unexpected call."
-    payload_len = len(msg['payload'])
-    assert payload_len == 4, "Unexpected payload length"
-
-    print(f"    {get_msg_code(msg)} (reset receiver/ clear backup data structure command).")
-    nav_bbr_mask = msg['payload'][0:2]
-    nav_bbr_mask_special = ''
-    # check three special values to append textual representation
-    if nav_bbr_mask == b'\x00\x00':
-        nav_bbr_mask_special = ' (hotstart)'
-    elif nav_bbr_mask == b'\x00\x01':
-        nav_bbr_mask_special = ' (warmstart)'
-    elif nav_bbr_mask == b'\xff\xff':
-        nav_bbr_mask_special = ' (coldstart)'
-    reset_mode = msg['payload'][2]
-    reserved1 = msg['payload'][3]
-    print(f"      navBbrMask: {nav_bbr_mask}{nav_bbr_mask_special}")
-    print(f"      resetMode:  {reset_mode}")
-    print(f"      reserved1:  {reserved1}")
-
-
-def process_mon_ver(msg):
-    assert msg['class'] == b'\x0A' and msg['id'] == b'\x04', "Unexpected call."
-    payload_len = len(msg['payload'])
-    assert payload_len == 0, "Unexpected payload length"
-    # or payload_len >= 70 -- nope, does not make sense to support a setter
-
-    print(f"    {get_msg_code(msg)} (Receiver/Software/ROM Version, poll request)")
-    # TODO: should queue reply with message configuration (ACK comes first)
-    # sw_version = ... # 30 characters, NULL-terminated
-    # hw_version = ... # 10 characters, NULL-terminated
-    # rom_version = ... # 30 characters, NULL-terminated
-    # extension = ... # optional extension data
-
-
-def process_aid_alpsrv(msg):
-    assert msg['class'] == b'\x0B' and msg['id'] == b'\x32', "Unexpected call."
-    payload_len = len(msg['payload'])
-    assert payload_len >= 8, "Unexpected payload length (must be >=8 bytes)"
-    print(f"    {get_msg_code(msg)} (ALP server/client AlmanacPlus data; TODO)")
-    # TODO/FIXME
-
-
-# def process_aid_ini(msg):
-#    assert msg['class'] == b'\x0B' and msg['id'] == b'\x01', "Unexpected call."
-
-
-def process_aid_alp(msg):
-    assert msg['class'] == b'\x0b' and msg['id'] == b'\x50', "Unexpected call."
-    payload_len = len(msg['payload'])
-    assert payload_len % 2 == 0 or payload_len == 1, "Unexpected payload length (must be even-sized or 1)"
-    assert payload_len <= 700, "Payload too large"  # would exceed the receiver's internal buffering capabilities
-
-    print(f"    {get_msg_code(msg)} (ALP file data transfer to the receiver)")
-    if payload_len == 1:
-        assert(msg['payload'][0] == b'\x00')
-        print("      Marking end of transfer.")
-    else:
-        print(f"      ALP file data: {msg['payload']}")
+        print(f"    {self.get_msg_code(msg)} (ALP file data transfer to the receiver)")
+        if payload_len == 1:
+            assert(msg['payload'][0] == b'\x00')
+            print("      Marking end of transfer.")
+        else:
+            print(f"      ALP file data: {msg['payload']}")
 
 
 def run():
     baudrates_accepted = [4800, 9600, 19200, 38400, 57600, 115200]
     baudrate_default = 9600
+
     target_ids_accepted = [1, 2]  # FIXME: currently unused
     target_id_default = 1  # FIXME: currently unused
-    blocking_read_timeout = 0.05  # in seconds; this blocking time has influence of the jitter of the periodic transmits (as this script is currently single-threaded and switches between receiving and transmitting)
+
+    # blocking time (in seconds) for every blocking read; has influence of the jitter of the periodic transmits
+    # (as this script is currently single-threaded and switches between receiving and transmitting)
+    blocking_read_timeout = 0.05
+
     parser = argparse.ArgumentParser(description='%(prog)s '
                                                  'Run simulated UBX GPX receiver.')
 
