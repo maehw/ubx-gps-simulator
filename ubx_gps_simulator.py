@@ -148,6 +148,245 @@ class RxState(Enum):
 # - remote inventory (binary or ASCII data)
 
 
+class UbxGpsSimulator:
+    def __init__(self, serial_port_name, serial_baudrate, serial_blocking_read_timeout):
+        # From the specification, section about "UART Ports":
+        # "The serial ports consist of an RX and a TX line.
+        #  Neither handshaking signals nor hardware flow control signals are available."
+        # Configuration must be 8N1, but different baud rates are possible.
+        self.ser = serial.Serial(port=serial_port_name,
+                                 baudrate=serial_baudrate,
+                                 timeout=serial_blocking_read_timeout)
+        print(f"Opened serial port '{self.ser.name}' with a baudrate of {self.ser.baudrate} and "
+              f"serial blocking read timeout of {serial_blocking_read_timeout}.")
+
+    def run(self):
+        last_tx_time_millis = None
+        startup_time = pendulum.now().microsecond
+
+        # run the state machine, receiving and processing byte by byte;
+        # please note that this script runs single-threaded and does both RX and TX
+        rx_state = RxState.WAIT_SYNC_1
+        msg = {}
+        rx_byte = None
+        while True:
+            rx_byte = self.ser.read()
+            # check if timeout has occurred or if a byte has been received
+            # TODO: move this into a less complex part of code (state machine driver)
+            if rx_byte:
+                # print(f"Rx'ed character: {rx_byte}. Receiver in state: '{rx_state}' (Type: {type(rx_byte)}).")
+                if rx_state == RxState.WAIT_SYNC_1:
+                    if rx_byte == b'\xb5':
+                        # print("Found 1st sync byte.")
+                        rx_state = RxState.WAIT_SYNC_2
+                    else:
+                        # print("Did not find 1st sync byte.")
+                        rx_state = RxState.WAIT_SYNC_1
+                elif rx_state == RxState.WAIT_SYNC_2:
+                    if rx_byte == b'\x62':
+                        # print("Found sync bytes (start of message).")
+                        rx_state = RxState.WAIT_MSG_CLASS
+                    else:
+                        rx_state = RxState.WAIT_SYNC_1
+                elif rx_state == RxState.WAIT_MSG_CLASS:
+                    msg = {
+                        'class': rx_byte,
+                        'id': None,
+                        'len_raw': None,
+                        'remaining_len': 0,
+                        'payload': b'',
+                        'checksum': None
+                    }
+                    rx_state = RxState.WAIT_MSG_ID
+                elif rx_state == RxState.WAIT_MSG_ID:
+                    msg['id'] = rx_byte
+                    rx_state = RxState.WAIT_LENGTH_1
+                elif rx_state == RxState.WAIT_LENGTH_1:
+                    msg['len_raw'] = rx_byte
+                    rx_state = RxState.WAIT_LENGTH_2
+                elif rx_state == RxState.WAIT_LENGTH_2:
+                    msg['len_raw'] += rx_byte
+                    # recalculate length from the two bytes
+                    remaining_len = int.from_bytes(msg['len_raw'], 'little', signed=False)
+                    # print(f"Expecting {remaining_len} payload bytes in message.")
+                    msg['remaining_len'] = remaining_len
+                    if remaining_len > 0:
+                        rx_state = RxState.WAIT_PAYLOAD_CPLT
+                    else:
+                        # skipping payload
+                        rx_state = RxState.WAIT_CHECKSUM_START
+                elif rx_state == RxState.WAIT_PAYLOAD_CPLT:
+                    msg['remaining_len'] -= 1
+                    msg['payload'] += rx_byte
+                    if msg['remaining_len'] <= 0:
+                        rx_state = RxState.WAIT_CHECKSUM_START
+                elif rx_state == RxState.WAIT_CHECKSUM_START:
+                    # here comes the first byte of the checksum
+                    msg['checksum'] = rx_byte
+                    rx_state = RxState.WAIT_MSG_CPLT
+                elif rx_state == RxState.WAIT_MSG_CPLT:
+                    msg['checksum'] += rx_byte
+                    # print(f"Message checksum: {msg['checksum']}")
+                    if has_valid_checksum(msg):
+                        print(f">>> Received VALID message: class 0x{ord(msg['class']):02X}, "
+                              f"ID 0x{ord(msg['id']):02X} ", end="")
+                        if msg['payload'] == b'':
+                            print(f"w/o payload.")
+                        else:
+                            print(f"w/ payload {msg['payload']} (length: {len(msg['payload'])}).")
+                        self.process_message(msg)
+                    else:
+                        print(f"!!! Received INVALID message: {msg}.")
+                    rx_state = RxState.WAIT_SYNC_1
+                # print(f"  Processed the byte. Next state: {rx_state}")
+            # else:
+            #    print("Timeout? Could not read a single byte!")
+
+            # make sure to transmit after having processed the received message as
+            # this can have triggered some direct transmissions
+            # (ACK-ACK, ACK-NAK, replies to poll requests)
+
+            # TODO: processed queued transmissions
+
+            # handle cyclic transmissions
+            do_cyclic_transmit = False
+            transmit_period = 1e3  # milliseconds, i.e. 1 second; TODO/FIXME: use dynamic rates for every message ID!
+            # TODO/FIXME: check for time and if some message countdowns have elapsed
+            #             depending on their rates and cyclic data needs to be sent
+            current_time = pendulum.now()
+            current_time_millis = int(
+                current_time.format('x'))  # cannot just use the attribute 'microsends' due to wrap-around
+            current_time_of_week = get_time_of_week(current_time)
+
+            if last_tx_time_millis is not None:
+                time_diff = current_time_millis - last_tx_time_millis
+                if time_diff >= transmit_period:
+                    do_cyclic_transmit = True
+            else:
+                # there is no last time; so let's start with the first time to transmit something
+                do_cyclic_transmit = True
+
+            # FIXME: actually the following cyclic transmission is prepared;
+            #        BUT: do not send "unreqeusted" messages yet without having rates properly configured!
+            if False:  # do_cyclic_transmit:
+                print(f"[{current_time.format('HH:mm:ss')}.{current_time.microsecond // 1000:03}] Cyclic transmit!")
+                print()
+
+                send_nav_posllh(ser,
+                                current_time_of_week,
+                                lon=11.574444, lat=48.139722,
+                                height=519.0, hmsl=519.0,
+                                hacc=0, vacc=0)
+                # - send_nav_dop(ser)
+                # - send_nav_status(ser)
+                # - send_nav_velned(ser)
+                # - send_nav_sol(ser)  # FIXME: not implemented yet
+                send_nav_timegps(ser,
+                                 current_time_of_week,
+                                 frac_time_of_week=0,
+                                 week=current_time.week_of_year)
+                # - send_nav_timeutc(ser)  # FIXME: not implemented yet
+                # - send_mon_hw(ser)  # FIXME: not implemented yet
+
+                last_tx_time_millis = current_time_millis  # just "now"
+        print("Done.")
+
+    def process_message(self, msg):
+        # process message, i.e.
+        # - decode class and ID to a human-readable code
+        # - decode single messages in more detail
+        # - reply with ACK-ACK messages to CFG-* messages
+
+        # handle specific messages
+        if msg['class'] == b'\x06':
+            # "Configuration Input Messages: Set Dynamic Model, Set DOP Mask,
+            #  Set Baud Rate, etc."
+            # "The CFG Class can be used to configure the receiver and read out
+            #  current configuration values. Any messages in Class CFG sent to the
+            #  receiver are acknowledged (with Message ACK-ACK) if processed
+            #  successfully, and rejected (with Message ACK-NAK) if processing the
+            #  message failed."
+            if msg['id'] == b'\x00':
+                self.process_cfg_prt(msg)
+            elif msg['id'] == b'\x01':
+                process_cfg_msg(msg)
+            elif msg['id'] == b'\x02':
+                process_cfg_inf(msg)
+            elif msg['id'] == b'\x04':
+                process_cfg_rst(msg)
+            elif msg['id'] == b'\x06':
+                process_cfg_cfg(msg)
+            elif msg['id'] == b'\x07':
+                process_cfg_tp(msg)
+            elif msg['id'] == b'\x24':
+                process_cfg_nav5(msg)
+            elif msg['id'] == b'\x34':
+                process_cfg_rinv(msg)
+            else:
+                print(f"    {get_msg_code(msg)}")
+
+            # always send ACK-ACK (for now); FIXME: may want to implement different behaviour
+            send_ack_ack(self.ser, msg['class'], msg['id'])
+        elif msg['class'] == b'\x0a' and msg['id'] == b'\x04':
+            process_mon_ver(msg)
+        # elif msg['class'] == b'\x0b' and msg['id'] == b'\x01':
+        #    process_aid_ini(msg)
+        # elif msg['class'] == b'\x0b' and msg['id'] == b'\x32':
+        #    process_aid_alpsrv(msg)
+        elif msg['class'] == b'\x0b' and msg['id'] == b'\x50':
+            process_aid_alp(msg)
+            send_ack_ack(self.ser, msg['class'], msg['id'])  # allow to send next chunk directly
+        else:
+            print(f"    {get_msg_code(msg)} (unhandled)")
+            print()  # Improve readability of log by adding an empty line
+
+    def process_cfg_prt(self, msg):
+        assert msg['class'] == b'\x06' and msg['id'] == b'\x00', "Unexpected call."
+        payload_len = len(msg['payload'])
+        assert payload_len in [0, 1, 20], "Unexpected CFG-MSG payload length (expecting 0, 1 or 20 bytes)."
+        # FIXME: possibly also multiple of 20 bytes (i.e. multiple 'configuration units')
+
+        if payload_len == 0:
+            print("      Poll the configuration of the used I/O Port.")
+            # TODO: should queue reply with message configuration (ACK comes first)
+        elif payload_len == 1:
+            print("      Poll the configuration of one I/O Port.")
+            # TODO: should queue reply with message configuration (ACK comes first)
+        else:
+            port_id = msg['payload'][0]  # single element is interpeted as integer in the range 0..255 by default
+            if port_id in [1, 2]:
+                # decoding fields continued for UART ports:
+                # byte #1 is reserved
+                tx_ready = msg['payload'][2:4]
+                mode = msg['payload'][4:8]
+                baudrate = int.from_bytes(msg['payload'][8:12], 'little', signed=False)
+                in_proto_mask = msg['payload'][12:14]
+                out_proto_mask = msg['payload'][14:16]
+                # bytes #16..#20 are reserved
+                print(f"      Port ID:        #{port_id}")
+                print(f"      TX ready:       {tx_ready}")
+                print(f"      Mode:           {mode}")
+                print(f"      Baudrate:       {baudrate} [Bits/s]")
+                print(f"      In proto mask:  {in_proto_mask}")
+                print(f"      Out proto mask: {out_proto_mask}")
+                # FIXME: make this dynamic and do not assert that we're always on port #1
+                #        (this should be a command line argument, and there should be an OOP approach)
+                if port_id == 1:
+                    self.reconfig_baudrate(baudrate)  # FIXME: should send ACK first!
+            else:
+                # FIXME: "also" add support for other configuration units
+                print(f"      Not decoding details for non-UART ports.")
+
+    def reconfig_baudrate(self, baudrate):
+        # FIXME: do not duplicate list of accepted baudrates!
+        baudrates_accepted = [4800, 9600, 19200, 38400, 57600, 115200]
+        if baudrate in baudrates_accepted:
+            self.ser.flush()
+            print(f"!!! Reconfiguring serial's baudrate to {baudrate}")
+            self.ser.baudrate = baudrate
+            self.ser.reset_input_buffer()
+
+
 def calc_checksum(block):
     # calculate checksum using 8 bit Fletcher algorithm
     ck_a = 0
@@ -375,104 +614,6 @@ def get_msg_code(msg):
     else:
         code = "???-???"
     return code
-
-
-def process_message(ser, msg):
-    # process message, i.e.
-    # - decode class and ID to a human-readable code
-    # - decode single messages in more detail
-    # - reply with ACK-ACK messages to CFG-* messages
-
-    # handle specific messages
-    if msg['class'] == b'\x06':
-        # "Configuration Input Messages: Set Dynamic Model, Set DOP Mask,
-        #  Set Baud Rate, etc."
-        # "The CFG Class can be used to configure the receiver and read out
-        #  current configuration values. Any messages in Class CFG sent to the
-        #  receiver are acknowledged (with Message ACK-ACK) if processed
-        #  successfully, and rejected (with Message ACK-NAK) if processing the
-        #  message failed."
-        if msg['id'] == b'\x00':
-            process_cfg_prt(msg, ser)
-        elif msg['id'] == b'\x01':
-            process_cfg_msg(msg)
-        elif msg['id'] == b'\x02':
-            process_cfg_inf(msg)
-        elif msg['id'] == b'\x04':
-            process_cfg_rst(msg)
-        elif msg['id'] == b'\x06':
-            process_cfg_cfg(msg)
-        elif msg['id'] == b'\x07':
-            process_cfg_tp(msg)
-        elif msg['id'] == b'\x24':
-            process_cfg_nav5(msg)
-        elif msg['id'] == b'\x34':
-            process_cfg_rinv(msg)
-        else:
-            print(f"    {get_msg_code(msg)}")
-
-        # always send ACK-ACK (for now); FIXME: may want to implement different behaviour
-        send_ack_ack(ser, msg['class'], msg['id'])
-    elif msg['class'] == b'\x0a' and msg['id'] == b'\x04':
-        process_mon_ver(msg)
-    # elif msg['class'] == b'\x0b' and msg['id'] == b'\x01':
-    #    process_aid_ini(msg)
-    # elif msg['class'] == b'\x0b' and msg['id'] == b'\x32':
-    #    process_aid_alpsrv(msg)
-    elif msg['class'] == b'\x0b' and msg['id'] == b'\x50':
-        process_aid_alp(msg)
-        send_ack_ack(ser, msg['class'], msg['id'])  # allow to send next chunk directly
-    else:
-        print(f"    {get_msg_code(msg)} (unhandled)")
-        print()  # Improve readability of log by adding an empty line
-
-
-def process_cfg_prt(msg, ser):
-    assert msg['class'] == b'\x06' and msg['id'] == b'\x00', "Unexpected call."
-    payload_len = len(msg['payload'])
-    assert payload_len in [0, 1, 20], "Unexpected CFG-MSG payload length (expecting 0, 1 or 20 bytes)."
-    # FIXME: possibly also multiple of 20 bytes (i.e. multiple 'configuration units')
-
-    if payload_len == 0:
-        print("      Poll the configuration of the used I/O Port.")
-        # TODO: should queue reply with message configuration (ACK comes first)
-    elif payload_len == 1:
-        print("      Poll the configuration of one I/O Port.")
-        # TODO: should queue reply with message configuration (ACK comes first)
-    else:
-        port_id = msg['payload'][0]  # single element is interpeted as integer in the range 0..255 by default
-        if port_id in [1, 2]:
-            # decoding fields continued for UART ports:
-            # byte #1 is reserved
-            tx_ready = msg['payload'][2:4]
-            mode = msg['payload'][4:8]
-            baudrate = int.from_bytes(msg['payload'][8:12], 'little', signed=False)
-            in_proto_mask = msg['payload'][12:14]
-            out_proto_mask = msg['payload'][14:16]
-            # bytes #16..#20 are reserved
-            print(f"      Port ID:        #{port_id}")
-            print(f"      TX ready:       {tx_ready}")
-            print(f"      Mode:           {mode}")
-            print(f"      Baudrate:       {baudrate} [Bits/s]")
-            print(f"      In proto mask:  {in_proto_mask}")
-            print(f"      Out proto mask: {out_proto_mask}")
-            # FIXME: make this dynamic and do not assert that we're always on port #1
-            #        (this should be a command line argument, and there should be an OOP approach)
-            if port_id == 1:
-                reconfig_baudrate(ser, baudrate)  # FIXME: should send ACK first!
-        else:
-            # FIXME: "also" add support for other configuration units
-            print(f"      Not decoding details for non-UART ports.")
-
-
-def reconfig_baudrate(ser, baudrate):
-    # FIXME: do not duplicate list of accepted baudrates!
-    baudrates_accepted = [4800, 9600, 19200, 38400, 57600, 115200]
-    if baudrate in baudrates_accepted:
-        ser.flush()
-        print(f"!!! Reconfiguring serial's baudrate to {baudrate}")
-        ser.baudrate = baudrate
-        ser.reset_input_buffer()
 
 
 def process_cfg_msg(msg):
@@ -755,150 +896,10 @@ def run():
 
     assert args.serial_baudrate in baudrates_accepted, "Invalid baudrate selected."
 
-    # From the specification, section about "UART Ports":
-    # "The serial ports consist of an RX and a TX line.
-    #  Neither handshaking signals nor hardware flow control signals are available."
-    # Configuration must be 8N1, but different baud rates are possible.
-    ser = serial.Serial(port=args.serial_port_name,
-                        baudrate=args.serial_baudrate,
-                        timeout=blocking_read_timeout)
-    print(f"Opened serial port '{ser.name}' with a baudrate of {ser.baudrate}.")
-    # print(ser)
-    use_mock = False
-    # rx_mock_data = b"\xb5\x62\x06\x34\x00\x00\x3a\x40\xff\x1b\xad\x1d\xea\xc0\xff\xee\xb5"
-    # for rx_byte in rx_mock_data:
-
-    last_tx_time_millis = None
-    startup_time = pendulum.now().microsecond
-
-    # run the state machine, receiving and processing byte by byte;
-    # please note that this script runs single-threaded and does both RX and TX
-    rx_state = RxState.WAIT_SYNC_1
-    msg = {}
-    rx_byte = None
-    while True:
-        if use_mock:
-            rx_byte = rx_byte.to_bytes(1, 'little')
-        else:
-            rx_byte = ser.read()
-        # check if timeout has occurred or if a byte has been received
-        # TODO: move this into a less complex part of code (state machine driver)
-        if rx_byte:
-            # print(f"Rx'ed character: {rx_byte}. Receiver in state: '{rx_state}' (Type: {type(rx_byte)}).")
-            if rx_state == RxState.WAIT_SYNC_1:
-                if rx_byte == b'\xb5':
-                    # print("Found 1st sync byte.")
-                    rx_state = RxState.WAIT_SYNC_2
-                else:
-                    # print("Did not find 1st sync byte.")
-                    rx_state = RxState.WAIT_SYNC_1
-            elif rx_state == RxState.WAIT_SYNC_2:
-                if rx_byte == b'\x62':
-                    # print("Found sync bytes (start of message).")
-                    rx_state = RxState.WAIT_MSG_CLASS
-                else:
-                    rx_state = RxState.WAIT_SYNC_1
-            elif rx_state == RxState.WAIT_MSG_CLASS:
-                msg = {
-                    'class': rx_byte,
-                    'id': None,
-                    'len_raw': None,
-                    'remaining_len': 0,
-                    'payload': b'',
-                    'checksum': None
-                }
-                rx_state = RxState.WAIT_MSG_ID
-            elif rx_state == RxState.WAIT_MSG_ID:
-                msg['id'] = rx_byte
-                rx_state = RxState.WAIT_LENGTH_1
-            elif rx_state == RxState.WAIT_LENGTH_1:
-                msg['len_raw'] = rx_byte
-                rx_state = RxState.WAIT_LENGTH_2
-            elif rx_state == RxState.WAIT_LENGTH_2:
-                msg['len_raw'] += rx_byte
-                # recalculate length from the two bytes
-                remaining_len = int.from_bytes(msg['len_raw'], 'little', signed=False)
-                # print(f"Expecting {remaining_len} payload bytes in message.")
-                msg['remaining_len'] = remaining_len
-                if remaining_len > 0:
-                    rx_state = RxState.WAIT_PAYLOAD_CPLT
-                else:
-                    # skipping payload
-                    rx_state = RxState.WAIT_CHECKSUM_START
-            elif rx_state == RxState.WAIT_PAYLOAD_CPLT:
-                msg['remaining_len'] -= 1
-                msg['payload'] += rx_byte
-                if msg['remaining_len'] <= 0:
-                    rx_state = RxState.WAIT_CHECKSUM_START
-            elif rx_state == RxState.WAIT_CHECKSUM_START:
-                # here comes the first byte of the checksum
-                msg['checksum'] = rx_byte
-                rx_state = RxState.WAIT_MSG_CPLT
-            elif rx_state == RxState.WAIT_MSG_CPLT:
-                msg['checksum'] += rx_byte
-                # print(f"Message checksum: {msg['checksum']}")
-                if has_valid_checksum(msg):
-                    print(f">>> Received VALID message: class 0x{ord(msg['class']):02X}, "
-                          f"ID 0x{ord(msg['id']):02X} ", end="")
-                    if msg['payload'] == b'':
-                        print(f"w/o payload.")
-                    else:
-                        print(f"w/ payload {msg['payload']} (length: {len(msg['payload'])}).")
-                    process_message(ser, msg)
-                else:
-                    print(f"!!! Received INVALID message: {msg}.")
-                rx_state = RxState.WAIT_SYNC_1
-            # print(f"  Processed the byte. Next state: {rx_state}")
-        # else:
-        #    print("Timeout? Could not read a single byte!")
-
-        # make sure to transmit after having processed the received message as
-        # this can have triggered some direct transmissions
-        # (ACK-ACK, ACK-NAK, replies to poll requests)
-
-        # TODO: processed queued transmissions
-
-        # handle cyclic transmissions
-        do_cyclic_transmit = False
-        transmit_period = 1e3  # milliseconds, i.e. 1 second; TODO/FIXME: use dynamic rates for every message ID!
-        # TODO/FIXME: check for time and if some message countdowns have elapsed
-        #             depending on their rates and cyclic data needs to be sent
-        current_time = pendulum.now()
-        current_time_millis = int(current_time.format('x'))  # cannot just use the attribute 'microsends' due to wrap-around
-        current_time_of_week = get_time_of_week(current_time)
-
-        if last_tx_time_millis is not None:
-            time_diff = current_time_millis - last_tx_time_millis
-            if time_diff >= transmit_period:
-                do_cyclic_transmit = True
-        else:
-            # there is no last time; so let's start with the first time to transmit something
-            do_cyclic_transmit = True
-
-        # FIXME: actually the following cyclic transmission is prepared;
-        #        BUT: do not send "unreqeusted" messages yet without having rates properly configured!
-        if False:  # do_cyclic_transmit:
-            print(f"[{current_time.format('HH:mm:ss')}.{current_time.microsecond // 1000:03}] Cyclic transmit!")
-            print()
-
-            send_nav_posllh(ser,
-                            current_time_of_week,
-                            lon=11.574444, lat=48.139722,
-                            height=519.0, hmsl=519.0,
-                            hacc=0, vacc=0)
-            # - send_nav_dop(ser)
-            # - send_nav_status(ser)
-            # - send_nav_velned(ser)
-            # - send_nav_sol(ser)  # FIXME: not implemented yet
-            send_nav_timegps(ser,
-                             current_time_of_week,
-                             frac_time_of_week=0,
-                             week=current_time.week_of_year)
-            # - send_nav_timeutc(ser)  # FIXME: not implemented yet
-            # - send_mon_hw(ser)  # FIXME: not implemented yet
-
-            last_tx_time_millis = current_time_millis  # just "now"
-    print("Done.")
+    simulator = UbxGpsSimulator(serial_port_name=args.serial_port_name,
+                                serial_baudrate=args.serial_baudrate,
+                                serial_blocking_read_timeout=blocking_read_timeout)
+    simulator.run()
 
 
 if __name__ == '__main__':
