@@ -1,15 +1,21 @@
 # README
 
-There's a bunch of scripts and tools that allow to communicate with u-blox GPS receivers. However, I was unable to find scripts or tools that simulate the GPS receiver side. This Python script simulates the GPS receiver serial communication and can be used to replace the receiver hardware by running this script.
+There's a bunch of scripts and tools that allow to communicate with u-blox GPS receivers. However, I was unable to find scripts or tools that simulate the GPS receiver side. This Python script simulates the GPS receiver serial communication using UBX message protocol over Universal Asynchronous Receiver/Transmitter (UART). The idea is to replace the GPS receiver hardware by running this script - e.g. for testing code indoors before using it with real hardware.
+
+The simulator is planned to implement the proprietary (but with an accessible specification document) u-blox 6 GPS receiver UBX message protocol. It may also apply for other u-blox GPS receivers - if you know more, let us know.
 
 Its functionality is currently limited to:
 * receiving all messages and evaluating their checksums,
 * recognizing `CFG` class messages (`0x06`) and replying with an `ACK-ACK`.
+* assuming to run on and performing baudrate changes on I/O configuration port #1 (UART)
+
+**Disclaimer**: The code has a lot of hacks, feel free to improve it and make a pull request! Please also understand that this software will never cover all functions of the real GPS receiver hardware - and there are likely some bugs in the code (search for `FIXME` and `TODO`)!
+
 
 # Usage
 
 ```
-usage: ubx_gps_simulator.py [-h] [-b BAUDRATE] serial_port_name
+usage: ubx_gps_simulator.py [-h] [-b SERIAL_BAUDRATE] serial_port_name
 
 ubx_gps_simulator.py Run simulated UBX GPX receiver.
 
@@ -18,77 +24,12 @@ positional arguments:
 
 optional arguments:
   -h, --help            show this help message and exit
-  -b BAUDRATE, --baudrate BAUDRATE
-                        Serial baudrate (default: 115200)
+  -b SERIAL_BAUDRATE, --serial-baudrate SERIAL_BAUDRATE
+                        Serial baudrate with which the simulator is accessed
+                        initially (default: 9600, possible: 4800, 9600, 19200,
+                        38400, 57600, 115200)
 ```
 
-## Usage example OBS
+## Usage examples for OpenBikeSensor (OBS)
 
-Example: Debugging the [OpenBikeSensor](https://www.openbikesensor.org/) [firmware](https://github.com/openbikesensor/OpenBikeSensorFirmware) v0.16.765 on an ESP32 development board without any attached hardware.
-
-```
-> python3 ubx_gps_simulator.py /dev/tty.usbserial-DEADBEEF
-
->>> Received VALID message: class 0x06, ID 0x34 w/o payload.
-    CFG-RINV (remote inventory). Poll request.
-<<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x064Bk'
-
->>> Received VALID message: class 0x06, ID 0x04 w/ payload b'\x00\x00\x02\x00' (length: 4).
-    CFG-RST (reset receiver/ clear backup data structure command).
-      navBbrMask: b'\x00\x00' (hotstart)
-      resetMode:  2
-      reserved1:  0
-<<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x04\x12;'
-
->>> Received VALID message: class 0x06, ID 0x01 w/ payload b'\x0b2\x00\x00\x00\x00\x00\x00' (length: 8).
-    CFG-MSG for class 0x0B, ID 0x32 (AID-ALPSRV).
-      Rates for 6 I/O targets: b'\x00\x00\x00\x00\x00\x00'
-<<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x01\x0f8'
-
->>> Received VALID message: class 0x0B, ID 0x50 w/o payload.
-    AID-ALP (ALP file data transfer to the receiver)
-      ALP file data: b''
-<<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x0bPc\x91'
-
->>> Received VALID message: class 0x0A, ID 0x04 w/o payload.
-    MON-VER
-
->>> Received VALID message: class 0x0A, ID 0x09 w/o payload.
-    MON-HW
-
->>> Received VALID message: class 0x01, ID 0x03 w/o payload.
-    NAV-STATUS
-
->>> Received VALID message: class 0x06, ID 0x24 w/o payload.
-    CFG-NAV5
-<<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06$2['
-
->>> Received VALID message: class 0x06, ID 0x34 w/o payload.
-    CFG-RINV (remote inventory). Poll request.
-<<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x064Bk'
-
->>> Received VALID message: class 0x06, ID 0x01 w/ payload b'\x01 \x00\x01\x00\x00\x00\x00' (length: 8).
-    CFG-MSG for class 0x01, ID 0x20 (NAV-TIMEGPS).
-      Rates for 6 I/O targets: b'\x00\x01\x00\x00\x00\x00'
-<<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x01\x0f8'
-
->>> Received VALID message: class 0x06, ID 0x01 w/ payload b'\x01\x03\x00\x02\x00\x00\x00\x00' (length: 8).
-    CFG-MSG for class 0x01, ID 0x03 (NAV-STATUS).
-      Rates for 6 I/O targets: b'\x00\x02\x00\x00\x00\x00'
-<<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x01\x0f8'
-
->>> Received VALID message: class 0x06, ID 0x01 w/ payload b'\n\t\x00\x02\x00\x00\x00\x00' (length: 8).
-    CFG-MSG for class 0x0A, ID 0x09 (MON-HW).
-      Rates for 6 I/O targets: b'\x00\x02\x00\x00\x00\x00'
-<<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x01\x0f8'
-```
-
-From the logging console of the OBS firmware (running on the ESP32), without having any peripheral connected:
-
-```
-[I][gps.cpp:278] setBaud(): GPS startup already 115200
-[I][gps.cpp:177] softResetGps(): Soft-RESET GPS!
-...
-[W][gps.cpp:214] enableAlpIfDataIsAvailable(): Disable ALP - no data!
-...
-```
+See [OpenBikeSensor Usage](./OpenBikeSensor_Usage.md]).
