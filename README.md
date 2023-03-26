@@ -6,8 +6,8 @@ The simulator is planned to implement the proprietary (but with an accessible sp
 
 Its functionality is currently limited to:
 * receiving all messages and evaluating their checksums,
+* decoding and dumping decoded messages on the console,
 * recognizing `CFG` class messages (`0x06`) and replying with an `ACK-ACK`.
-* assuming to run on and performing baudrate changes on I/O configuration port #1 (UART)
 
 **Disclaimer**: The code has a lot of hacks, feel free to improve it and make a pull request! Please also understand that this software will never cover all functions of the real GPS receiver hardware - and there are likely some bugs in the code (search for `FIXME` and `TODO`)!
 
@@ -15,7 +15,8 @@ Its functionality is currently limited to:
 # Usage
 
 ```
-usage: ubx_gps_simulator.py [-h] [-b SERIAL_BAUDRATE] serial_port_name
+usage: ubx_gps_simulator.py [-h] [-b SERIAL_BAUDRATE] [-t IO_TARGET]
+                            serial_port_name
 
 ubx_gps_simulator.py Run simulated UBX GPX receiver.
 
@@ -28,6 +29,8 @@ optional arguments:
                         Serial baudrate with which the simulator is accessed
                         initially (default: 9600, possible: 4800, 9600, 19200,
                         38400, 57600, 115200)
+  -t IO_TARGET, --io-target IO_TARGET
+                        I/O target ID (default: 1, possible: 1, 2)
 ```
 
 ## Usage examples for OpenBikeSensor (OBS)

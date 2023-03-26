@@ -135,21 +135,22 @@ messages = {
 }
 
 
-class RxState(Enum):
-    # states for receiver state machine to parse UBX packet structure
-    WAIT_SYNC_1 = 1  # Wait 1st Sync Byte Rx'ed (0xB5)
-    WAIT_SYNC_2 = 2  # Wait 2nd Sync Byte Rx'ed (0x62)
-    WAIT_MSG_CLASS = 3  # Wait Message Class Byte Rx'ed
-    WAIT_MSG_ID = 4  # Wait Message ID Byte Rx'ed
-    WAIT_LENGTH_1 = 5  # Wait 1st Length Byte Rx'ed
-    WAIT_LENGTH_2 = 6  # Wait 2nd Length Byte Rx'ed
-    WAIT_PAYLOAD_CPLT = 7  # Wait Payload Completely Rx'ed
-    WAIT_CHECKSUM_START = 8  # Wait 1st Checksum Byte Rx'ed
-    WAIT_MSG_CPLT = 9  # Wait 2nd Checksum Byte Rx'ed
-
-
 class UbxGpsSimulator:
-    def __init__(self, serial_port_name, serial_baudrate, serial_blocking_read_timeout):
+    class RxState(Enum):
+        # states for receiver state machine to parse UBX packet structure
+        WAIT_SYNC_1 = 1  # Wait 1st Sync Byte Rx'ed (0xB5)
+        WAIT_SYNC_2 = 2  # Wait 2nd Sync Byte Rx'ed (0x62)
+        WAIT_MSG_CLASS = 3  # Wait Message Class Byte Rx'ed
+        WAIT_MSG_ID = 4  # Wait Message ID Byte Rx'ed
+        WAIT_LENGTH_1 = 5  # Wait 1st Length Byte Rx'ed
+        WAIT_LENGTH_2 = 6  # Wait 2nd Length Byte Rx'ed
+        WAIT_PAYLOAD_CPLT = 7  # Wait Payload Completely Rx'ed
+        WAIT_CHECKSUM_START = 8  # Wait 1st Checksum Byte Rx'ed
+        WAIT_MSG_CPLT = 9  # Wait 2nd Checksum Byte Rx'ed
+
+    def __init__(self, serial_port_name, serial_baudrate, serial_blocking_read_timeout, io_target):
+        self.io_target = io_target
+
         # From the specification, section about "UART Ports":
         # "The serial ports consist of an RX and a TX line.
         #  Neither handshaking signals nor hardware flow control signals are available."
@@ -158,7 +159,8 @@ class UbxGpsSimulator:
                                  baudrate=serial_baudrate,
                                  timeout=serial_blocking_read_timeout)
         print(f"Opened serial port '{self.ser.name}' with a baudrate of {self.ser.baudrate} and "
-              f"serial blocking read timeout of {serial_blocking_read_timeout} seconds.")
+              f"serial blocking read timeout of {serial_blocking_read_timeout} seconds. "
+              f"Simulating I/O target #{self.io_target}.")
 
     @staticmethod
     def print_protocol_id(identifier):
@@ -175,15 +177,11 @@ class UbxGpsSimulator:
         # calculate checksum using 8 bit Fletcher algorithm
         ck_a = 0
         ck_b = 0
-        # print(f"  Calculating checksum for block {block}")
         for b in block:
-            byte_val = b  # struct.unpack('B', b)[0]
-            ck_a += byte_val
+            ck_a += b
             ck_a = ck_a & 0xFF
             ck_b += ck_a
             ck_b = ck_b & 0xFF
-            # print(f"  Byte value: {byte_val} (0x{byte_val:02X}), CK_A: {ck_a}
-            # (0x{ck_a:02X}), CK_B: {ck_b} (0x{ck_b:02X})")
         return ck_a.to_bytes(1, 'little') + ck_b.to_bytes(1, 'little')
 
     @staticmethod
@@ -213,29 +211,29 @@ class UbxGpsSimulator:
 
         # run the state machine, receiving and processing byte by byte;
         # please note that this script runs single-threaded and does both RX and TX
-        rx_state = RxState.WAIT_SYNC_1
+        rx_state = self.RxState.WAIT_SYNC_1
         msg = {}
         rx_byte = None
+
+        # enter endless loop and process one received byte at a time
         while True:
             rx_byte = self.ser.read()
             # check if timeout has occurred or if a byte has been received
             # TODO: move this into a less complex part of code (state machine driver)
             if rx_byte:
-                # print(f"Rx'ed character: {rx_byte}. Receiver in state: '{rx_state}' (Type: {type(rx_byte)}).")
-                if rx_state == RxState.WAIT_SYNC_1:
+                # a byte has been received
+                if rx_state == self.RxState.WAIT_SYNC_1:
                     if rx_byte == b'\xb5':
-                        # print("Found 1st sync byte.")
-                        rx_state = RxState.WAIT_SYNC_2
+                        rx_state = self.RxState.WAIT_SYNC_2
                     else:
-                        # print("Did not find 1st sync byte.")
-                        rx_state = RxState.WAIT_SYNC_1
-                elif rx_state == RxState.WAIT_SYNC_2:
+                        rx_state = self.RxState.WAIT_SYNC_1
+                elif rx_state == self.RxState.WAIT_SYNC_2:
                     if rx_byte == b'\x62':
                         # print("Found sync bytes (start of message).")
-                        rx_state = RxState.WAIT_MSG_CLASS
+                        rx_state = self.RxState.WAIT_MSG_CLASS
                     else:
-                        rx_state = RxState.WAIT_SYNC_1
-                elif rx_state == RxState.WAIT_MSG_CLASS:
+                        rx_state = self.RxState.WAIT_SYNC_1
+                elif rx_state == self.RxState.WAIT_MSG_CLASS:
                     msg = {
                         'class': rx_byte,
                         'id': None,
@@ -244,37 +242,35 @@ class UbxGpsSimulator:
                         'payload': b'',
                         'checksum': None
                     }
-                    rx_state = RxState.WAIT_MSG_ID
-                elif rx_state == RxState.WAIT_MSG_ID:
+                    rx_state = self.RxState.WAIT_MSG_ID
+                elif rx_state == self.RxState.WAIT_MSG_ID:
                     msg['id'] = rx_byte
-                    rx_state = RxState.WAIT_LENGTH_1
-                elif rx_state == RxState.WAIT_LENGTH_1:
+                    rx_state = self.RxState.WAIT_LENGTH_1
+                elif rx_state == self.RxState.WAIT_LENGTH_1:
                     msg['len_raw'] = rx_byte
-                    rx_state = RxState.WAIT_LENGTH_2
-                elif rx_state == RxState.WAIT_LENGTH_2:
+                    rx_state = self.RxState.WAIT_LENGTH_2
+                elif rx_state == self.RxState.WAIT_LENGTH_2:
                     msg['len_raw'] += rx_byte
                     # recalculate length from the two bytes
                     remaining_len = int.from_bytes(msg['len_raw'], 'little', signed=False)
-                    # print(f"Expecting {remaining_len} payload bytes in message.")
                     msg['remaining_len'] = remaining_len
                     if remaining_len > 0:
-                        rx_state = RxState.WAIT_PAYLOAD_CPLT
+                        rx_state = self.RxState.WAIT_PAYLOAD_CPLT
                     else:
                         # skipping payload
-                        rx_state = RxState.WAIT_CHECKSUM_START
-                elif rx_state == RxState.WAIT_PAYLOAD_CPLT:
+                        rx_state = self.RxState.WAIT_CHECKSUM_START
+                elif rx_state == self.RxState.WAIT_PAYLOAD_CPLT:
                     msg['remaining_len'] -= 1
                     msg['payload'] += rx_byte
                     if msg['remaining_len'] <= 0:
-                        rx_state = RxState.WAIT_CHECKSUM_START
-                elif rx_state == RxState.WAIT_CHECKSUM_START:
+                        rx_state = self.RxState.WAIT_CHECKSUM_START
+                elif rx_state == self.RxState.WAIT_CHECKSUM_START:
                     # here comes the first byte of the checksum
                     msg['checksum'] = rx_byte
-                    rx_state = RxState.WAIT_MSG_CPLT
-                elif rx_state == RxState.WAIT_MSG_CPLT:
+                    rx_state = self.RxState.WAIT_MSG_CPLT
+                elif rx_state == self.RxState.WAIT_MSG_CPLT:
                     msg['checksum'] += rx_byte
-                    # print(f"Message checksum: {msg['checksum']}")
-                    if has_valid_checksum(msg):
+                    if self.has_valid_checksum(msg):
                         print(f">>> Received VALID message: class 0x{ord(msg['class']):02X}, "
                               f"ID 0x{ord(msg['id']):02X} ", end="")
                         if msg['payload'] == b'':
@@ -284,12 +280,9 @@ class UbxGpsSimulator:
                         self.process_message(msg)
                     else:
                         print(f"!!! Received INVALID message: {msg}.")
-                    rx_state = RxState.WAIT_SYNC_1
-                # print(f"  Processed the byte. Next state: {rx_state}")
-            # else:
-            #    print("Timeout? Could not read a single byte!")
+                    rx_state = self.RxState.WAIT_SYNC_1
 
-            # make sure to transmit after having processed the received message as
+            # make sure to transmit *after* having processed the received message as
             # this can have triggered some direct transmissions
             # (ACK-ACK, ACK-NAK, replies to poll requests)
 
@@ -372,7 +365,7 @@ class UbxGpsSimulator:
                 print(f"    {self.get_msg_code(msg)}")
 
             # always send ACK-ACK (for now); FIXME: may want to implement different behaviour
-            self.send_ack_ack(self.ser, msg['class'], msg['id'])
+            self.send_ack_ack(msg['class'], msg['id'])
         elif msg['class'] == b'\x0a' and msg['id'] == b'\x04':
             self.process_mon_ver(msg)
         # elif msg['class'] == b'\x0b' and msg['id'] == b'\x01':
@@ -386,6 +379,9 @@ class UbxGpsSimulator:
             print(f"    {self.get_msg_code(msg)} (unhandled)")
             print()  # Improve readability of log by adding an empty line
 
+    def queue_reply(self, msg):
+        return
+
     def process_cfg_prt(self, msg):
         assert msg['class'] == b'\x06' and msg['id'] == b'\x00', "Unexpected call."
         payload_len = len(msg['payload'])
@@ -395,11 +391,13 @@ class UbxGpsSimulator:
         if payload_len == 0:
             print("      Poll the configuration of the used I/O Port.")
             # TODO: should queue reply with message configuration (ACK comes first)
+            # self.queue_reply()
         elif payload_len == 1:
             print("      Poll the configuration of one I/O Port.")
             # TODO: should queue reply with message configuration (ACK comes first)
+            # self.queue_reply()
         else:
-            port_id = msg['payload'][0]  # single element is interpeted as integer in the range 0..255 by default
+            port_id = msg['payload'][0]  # single element is interpreted as integer in the range 0..255 by default
             if port_id in [1, 2]:
                 # decoding fields continued for UART ports:
                 # byte #1 is reserved
@@ -409,15 +407,17 @@ class UbxGpsSimulator:
                 in_proto_mask = msg['payload'][12:14]
                 out_proto_mask = msg['payload'][14:16]
                 # bytes #16..#20 are reserved
-                print(f"      Port ID:        #{port_id}")
+                print(f"      Port ID:        #{port_id}", end="")
+                if port_id == self.io_target:
+                    print("(*)")  # relevant for us
+                else:
+                    print()
                 print(f"      TX ready:       {tx_ready}")
                 print(f"      Mode:           {mode}")
                 print(f"      Baudrate:       {baudrate} [Bits/s]")
                 print(f"      In proto mask:  {in_proto_mask}")
                 print(f"      Out proto mask: {out_proto_mask}")
-                # FIXME: make this dynamic and do not assert that we're always on port #1
-                #        (this should be a command line argument, and there should be an OOP approach)
-                if port_id == 1:
+                if port_id == self.io_target:
                     self.reconfig_baudrate(baudrate)  # FIXME: should send ACK first!
             else:
                 # FIXME: "also" add support for other configuration units
@@ -625,18 +625,26 @@ class UbxGpsSimulator:
         if payload_len == 2:
             print("      Poll message configuration.")
             # TODO: should queue reply with message configuration (ACK comes first)
+            # self.queue_reply(msg)
         elif payload_len == 3:
             print(f"      Rate for current target: {pl_rate}")
             self.set_msg_rate(pl_msg_class, pl_msg_id, pl_rate)
         elif payload_len == 8:
-            print(f"      Rates for 6 I/O targets: {pl_rate[0]}, {pl_rate[1]}(*), {pl_rate[2]},"
-                  f" {pl_rate[4]}, {pl_rate[4]}, {pl_rate[5]}")
+            print(f"      Rates for 6 I/O targets: "
+                  f"{pl_rate[0]}, "
+                  f"{pl_rate[1]}{'(*)' if self.io_target == 1 else ''}, ",
+                  f"{pl_rate[2]}{'(*)' if self.io_target == 2 else ''}, ",
+                  f"{pl_rate[4]}, "
+                  f"{pl_rate[4]}, "
+                  f"{pl_rate[5]}")
             # (where #0=DDC/I2C, #1=UART1, #2=UART2, #3=USB, #4=SPI, #5=reserved for future use)
-            # FIXME: select for the target we are currently running (assue #1)
-            self.set_msg_rate(pl_msg_class, pl_msg_id, pl_rate[1])
+
+            # contains info for us for sure
+            self.set_msg_rate(pl_msg_class, pl_msg_id, pl_rate[self.io_target])
 
     def set_msg_rate(self, msg_class, msg_id, rate):
-        # FIXME: implement
+        print(f"      Requested rate change: class=0x{msg_class:02X}, ID=0x{msg_id:02X}, rate={rate} (TODO)")
+        # TODO/FIXME: implement
         return
 
     def process_cfg_cfg(self, msg):
@@ -729,9 +737,14 @@ class UbxGpsSimulator:
             protocol_id = msg['payload'][0]
             self.print_protocol_id(protocol_id)
             # TODO: this is a poll request, i.e. excepts an answer
+            # self.queue_reply(msg)
         else:
             for target_id in range(0, num_targets):  # blocks for "I/O target" aka "configuration unit"
-                print(f"      Target ID: #{target_id}")
+                print(f"      Target ID: #{target_id}", end="")
+                if target_id == self.io_target:
+                    print("      (*)") # FIXME: prints marker that this info is relevant for us, but does not make use of it
+                else:
+                    print()
                 protocol_id = msg['payload'][target_id*10 + 0]
                 self.print_protocol_id(protocol_id)
                 # inf_msg_msk = msg['payload'][target_id*10 + 4:(target_id+1)*10]  # 6 bytes
@@ -766,20 +779,21 @@ class UbxGpsSimulator:
         payload_len = len(msg['payload'])
         assert payload_len == 0 or payload_len >= 2, "Unexpected payload length"
 
-        print(f"    {self.get_msg_code(msg)} (remote inventory) ", end="")
+        print(f"    {self.get_msg_code(msg)} (remote inventory)")
         if payload_len == 0:
-            print("Poll request.")
+            print("    Poll request.")
             # TODO: should queue reply with message configuration (ACK comes first)
             # Note: the default is: flags=0x00, data="Notice: no data saved!"
+            # self.queue_reply()
         elif payload_len >= 2:
             flags = msg['payload'][0]
             data = msg['payload'][1:31]  # "If N is greater than 30, the excess bytes are discarded"
             is_binary = True if flags & 0x2 else False
             dump = True if flags & 0x1 else False  # dump data at startup (does not work if flag 'binary' is set)
-            print(f"      Flags: binary={is_binary}, dump={dump}. ", end="")
+            print(f"      Flags: binary={is_binary}, dump={dump}.")
             print(f"      Data: {data}")
             if not is_binary:
-                print(f"      Data (textual): {data.decode('ascii')}")
+                print(f"      Data (textual): '{data.decode('ascii')}'")
 
     def process_cfg_rst(self, msg):
         assert msg['class'] == b'\x06' and msg['id'] == b'\x04', "Unexpected call."
@@ -840,8 +854,8 @@ def run():
     baudrates_accepted = [4800, 9600, 19200, 38400, 57600, 115200]
     baudrate_default = 9600
 
-    target_ids_accepted = [1, 2]  # FIXME: currently unused
-    target_id_default = 1  # FIXME: currently unused
+    io_targets_accepted = [1, 2]
+    io_target_default = 1
 
     # blocking time (in seconds) for every blocking read; has influence of the jitter of the periodic transmits
     # (as this script is currently single-threaded and switches between receiving and transmitting)
@@ -860,21 +874,23 @@ def run():
                              f"possible: {', '.join(str(b) for b in baudrates_accepted)})",
                         default=baudrate_default)
 
-    # Not used yet (FIXME)
-    # parser.add_argument('-t', '--io-target',
-    #                    type=int,
-    #                    help='I/O target ID '
-    #                         f"(default: {target_id_default}, "
-    #                         f"possible: {', '.join(str(t) for t in target_ids_accepted)})",
-    #                    default=target_id_default)
+    # "A target in the context of the I/O system is an I/O port."
+    parser.add_argument('-t', '--io-target',
+                       type=int,
+                       help='I/O target ID '
+                            f"(default: {io_target_default}, "
+                            f"possible: {', '.join(str(t) for t in io_targets_accepted)})",
+                       default=io_target_default)
 
     args = parser.parse_args()
 
     assert args.serial_baudrate in baudrates_accepted, "Invalid baudrate selected."
+    assert args.io_target in io_targets_accepted, "Invalid I/O target selected."
 
     simulator = UbxGpsSimulator(serial_port_name=args.serial_port_name,
                                 serial_baudrate=args.serial_baudrate,
-                                serial_blocking_read_timeout=blocking_read_timeout)
+                                serial_blocking_read_timeout=blocking_read_timeout,
+                                io_target=args.io_target)
     simulator.run()
 
 
