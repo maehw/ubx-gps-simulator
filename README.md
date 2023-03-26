@@ -32,4 +32,4 @@ optional arguments:
 
 ## Usage examples for OpenBikeSensor (OBS)
 
-See [OpenBikeSensor Usage](./OpenBikeSensor_Usage.md]).
+See [OpenBikeSensor Usage](./OpenBikeSensor_Usage.md).

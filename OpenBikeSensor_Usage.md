@@ -1,7 +1,5 @@
 # Usage examples for OpenBikeSensor (OBS)
 
-See [OpenBikeSensor Usage](./OpenBikeSensor_Usage.md]).
-
 Example: Debugging the [OpenBikeSensor](https://www.openbikesensor.org/) [firmware](https://github.com/openbikesensor/OpenBikeSensorFirmware) v0.16.765 on an ESP32 development board without any attached hardware.
 
 ```
