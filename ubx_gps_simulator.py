@@ -148,8 +148,15 @@ class UbxGpsSimulator:
         WAIT_CHECKSUM_START = 8  # Wait 1st Checksum Byte Rx'ed
         WAIT_MSG_CPLT = 9  # Wait 2nd Checksum Byte Rx'ed
 
-    def __init__(self, serial_port_name, serial_baudrate, serial_blocking_read_timeout, io_target):
+    def __init__(self,
+                 serial_port_name,
+                 serial_baudrate,
+                 serial_baudrates_accepted,
+                 serial_blocking_read_timeout,
+                 io_target):
+        self.queued_replies = []
         self.io_target = io_target
+        self.baudrates_accepted = serial_baudrates_accepted
 
         # From the specification, section about "UART Ports":
         # "The serial ports consist of an RX and a TX line.
@@ -286,7 +293,8 @@ class UbxGpsSimulator:
             # this can have triggered some direct transmissions
             # (ACK-ACK, ACK-NAK, replies to poll requests)
 
-            # TODO: processed queued transmissions
+            # process queued transmissions
+            self.send_queued_replies()
 
             # handle cyclic transmissions
             do_cyclic_transmit = False
@@ -312,7 +320,7 @@ class UbxGpsSimulator:
                 print(f"[{current_time.format('HH:mm:ss')}.{current_time.microsecond // 1000:03}] Cyclic transmit!")
                 print()
 
-                send_nav_posllh(ser,
+                self.send_nav_posllh(ser,
                                 current_time_of_week,
                                 lon=11.574444, lat=48.139722,
                                 height=519.0, hmsl=519.0,
@@ -321,7 +329,7 @@ class UbxGpsSimulator:
                 # - send_nav_status(ser)
                 # - send_nav_velned(ser)
                 # - send_nav_sol(ser)  # FIXME: not implemented yet
-                send_nav_timegps(ser,
+                self.send_nav_timegps(ser,
                                  current_time_of_week,
                                  frac_time_of_week=0,
                                  week=current_time.week_of_year)
@@ -338,6 +346,8 @@ class UbxGpsSimulator:
 
         # handle specific messages
         if msg['class'] == b'\x06':
+            send_ack = None  # initialize return value (None: do not send ACK or NAK, True: send ACK, False: send NAK)
+
             # "Configuration Input Messages: Set Dynamic Model, Set DOP Mask,
             #  Set Baud Rate, etc."
             # "The CFG Class can be used to configure the receiver and read out
@@ -346,26 +356,28 @@ class UbxGpsSimulator:
             #  successfully, and rejected (with Message ACK-NAK) if processing the
             #  message failed."
             if msg['id'] == b'\x00':
-                self.process_cfg_prt(msg)
+                send_ack = self.process_cfg_prt(msg)
             elif msg['id'] == b'\x01':
-                self.process_cfg_msg(msg)
+                send_ack = self.process_cfg_msg(msg)
             elif msg['id'] == b'\x02':
-                self.process_cfg_inf(msg)
+                send_ack = self.process_cfg_inf(msg)
             elif msg['id'] == b'\x04':
-                self.process_cfg_rst(msg)
-            elif msg['id'] == b'\x06':
-                self.process_cfg_cfg(msg)
+                send_ack = self.process_cfg_rst(msg)
             elif msg['id'] == b'\x07':
-                self.process_cfg_tp(msg)
+                send_ack = self.process_cfg_tp(msg)
+            elif msg['id'] == b'\x09':
+                send_ack = self.process_cfg_cfg(msg)
             elif msg['id'] == b'\x24':
-                self.process_cfg_nav5(msg)
+                send_ack = self.process_cfg_nav5(msg)
             elif msg['id'] == b'\x34':
-                self.process_cfg_rinv(msg)
+                send_ack = self.process_cfg_rinv(msg)
             else:
                 print(f"    {self.get_msg_code(msg)}")
 
-            # always send ACK-ACK (for now); FIXME: may want to implement different behaviour
-            self.send_ack_ack(msg['class'], msg['id'])
+            if send_ack in [True, False]:
+                # send ACK-ACK or ACK-NAK
+                self.send_ack_or_nak(msg['class'], msg['id'], send_ack)
+
         elif msg['class'] == b'\x0a' and msg['id'] == b'\x04':
             self.process_mon_ver(msg)
         # elif msg['class'] == b'\x0b' and msg['id'] == b'\x01':
@@ -380,7 +392,32 @@ class UbxGpsSimulator:
             print()  # Improve readability of log by adding an empty line
 
     def queue_reply(self, msg):
-        return
+        assert 'class' in msg, "Missing message class"
+        assert 'id' in msg, "Missing message ID"
+        assert 'payload' in msg, "Missing message payload"
+        self.queued_replies.append(msg)
+        print(f"    Queued message. Queue length: {len(self.queued_replies)} replies")
+
+    def send_queued_replies(self):
+        # send replies that have been queued by calling queue_reply()
+        if self.queued_replies:
+            print("... Preparing to send queued replies.")
+            i = 0
+            for msg in self.queued_replies:
+                print(f"... Sending queued reply #{i} ({self.get_msg_code(msg)}): {msg}")
+
+                sync = b'\xb5\x62'
+                length = len(msg['payload']).to_bytes(2, 'little')
+                body = msg['class'] + msg['id'] + length
+                body += msg['payload']
+                cs = self.calc_fletcher_checksum(body)
+                msg['payload'] = sync + body + cs
+                print(f"<<< Sending {self.get_msg_code(msg)} message: {msg['payload']}")
+                print()  # Improve readability of log by adding an empty line
+                self.ser.write(msg['payload'])
+
+                i += 1
+            self.queued_replies = []  # OK to empty list here as there's no concurrency
 
     def process_cfg_prt(self, msg):
         assert msg['class'] == b'\x06' and msg['id'] == b'\x00', "Unexpected call."
@@ -418,19 +455,25 @@ class UbxGpsSimulator:
                 print(f"      In proto mask:  {in_proto_mask}")
                 print(f"      Out proto mask: {out_proto_mask}")
                 if port_id == self.io_target:
-                    self.reconfig_baudrate(baudrate)  # FIXME: should send ACK first!
+                    # send ACK-ACK here
+                    if baudrate in self.baudrates_accepted:
+                        self.send_ack_ack(msg['class'], msg['id'])
+                        self.reconfig_baudrate(baudrate)
+                        return None  # do not allow caller to send ACK-ACK again!
+                    else:
+                        return False  # caller shall send ACK-NAK due to unsupported baudrate
             else:
                 # FIXME: "also" add support for other configuration units
                 print(f"      Not decoding details for non-UART ports.")
+        return True    # allow caller to send ACK-ACK
 
     def reconfig_baudrate(self, baudrate):
-        # FIXME: do not duplicate list of accepted baudrates!
-        baudrates_accepted = [4800, 9600, 19200, 38400, 57600, 115200]
-        if baudrate in baudrates_accepted:
-            self.ser.flush()
-            print(f"!!! Reconfiguring serial's baudrate to {baudrate}")
-            self.ser.baudrate = baudrate
-            self.ser.reset_input_buffer()
+        self.ser.flush()
+        print(f"!!! Reconfiguring serial's baudrate to {baudrate}")
+        print()
+        self.ser.baudrate = baudrate
+        self.ser.reset_output_buffer()
+        self.ser.reset_input_buffer()
 
     def has_valid_checksum(self, msg):
         # calculate checksum and verify (i.e. compare with received one)
@@ -641,6 +684,7 @@ class UbxGpsSimulator:
 
             # contains info for us for sure
             self.set_msg_rate(pl_msg_class, pl_msg_id, pl_rate[self.io_target])
+        return True  # allow caller to send ACK-ACK
 
     def set_msg_rate(self, msg_class, msg_id, rate):
         print(f"      Requested rate change: class=0x{msg_class:02X}, ID=0x{msg_id:02X}, rate={rate} (TODO)")
@@ -661,12 +705,13 @@ class UbxGpsSimulator:
 
         print(f"    {self.get_msg_code(msg)} (Clear, Save and Load configurations) ", end="")
         if pl_device_mask:
-            print(f"with optional device mask: 0x{ord(pl_device_mask):02X}.")
+            print(f"with optional device mask: 0x{pl_device_mask:02X}.")
         else:
             print(f"w/o optional device mask.")
         print(f"      Clear mask: {pl_clear_mask}")
         print(f"      Save mask:  {pl_save_mask}")
         print(f"      Load mask:  {pl_load_mask}")
+        return True  # allow caller to send ACK-ACK
 
     def process_cfg_tp(self, msg):
         assert msg['class'] == b'\x06' and msg['id'] == b'\x07', "Unexpected call."
@@ -696,6 +741,7 @@ class UbxGpsSimulator:
             print(f"      Ant. cable delay:  {ant_cable_delay} [ns]")
             print(f"      RX RF group delay: {rf_group_delay} [ns]")
             print(f"      User delay:        {user_delay} [ns]")
+        return True  # allow caller to send ACK-ACK
 
     def process_cfg_nav5(self, msg):
         assert msg['class'] == b'\x06' and msg['id'] == b'\x24', "Unexpected call."
@@ -723,6 +769,7 @@ class UbxGpsSimulator:
             # the remaining 12 bytes are currently marked reserved ("always set to zero")
             print(f"      Mask: {mask}")
             # TODO: continue...
+        return True  # allow caller to send ACK-ACK
 
     def process_cfg_inf(self, msg):
         assert msg['class'] == b'\x06' and msg['id'] == b'\x02', "Unexpected call."
@@ -773,6 +820,7 @@ class UbxGpsSimulator:
                     disabled_info_msg.append('TEST')
                 print(f"      Enabled messages:  {', '.join(enabled_info_msg) if enabled_info_msg else '(none)'}")
                 print(f"      Disabled messages: {', '.join(disabled_info_msg) if disabled_info_msg else '(none)'}")
+        return True  # allow caller to send ACK-ACK
 
     def process_cfg_rinv(self, msg):
         assert msg['class'] == b'\x06' and msg['id'] == b'\x34', "Unexpected call."
@@ -784,7 +832,13 @@ class UbxGpsSimulator:
             print("    Poll request.")
             # TODO: should queue reply with message configuration (ACK comes first)
             # Note: the default is: flags=0x00, data="Notice: no data saved!"
-            # self.queue_reply()
+            payload = b'\x00Notice: no data saved!'
+            msg = {
+                'class': msg['class'],
+                'id': msg['id'],
+                'payload': payload
+            }
+            self.queue_reply(msg)
         elif payload_len >= 2:
             flags = msg['payload'][0]
             data = msg['payload'][1:31]  # "If N is greater than 30, the excess bytes are discarded"
@@ -794,6 +848,7 @@ class UbxGpsSimulator:
             print(f"      Data: {data}")
             if not is_binary:
                 print(f"      Data (textual): '{data.decode('ascii')}'")
+        return True  # allow caller to send ACK-ACK
 
     def process_cfg_rst(self, msg):
         assert msg['class'] == b'\x06' and msg['id'] == b'\x04', "Unexpected call."
@@ -815,6 +870,7 @@ class UbxGpsSimulator:
         print(f"      navBbrMask: {nav_bbr_mask}{nav_bbr_mask_special}")
         print(f"      resetMode:  {reset_mode}")
         print(f"      reserved1:  {reserved1}")
+        return True  # allow caller to send ACK-ACK
 
     def process_mon_ver(self, msg):
         assert msg['class'] == b'\x0A' and msg['id'] == b'\x04', "Unexpected call."
@@ -889,6 +945,7 @@ def run():
 
     simulator = UbxGpsSimulator(serial_port_name=args.serial_port_name,
                                 serial_baudrate=args.serial_baudrate,
+                                serial_baudrates_accepted=baudrates_accepted,
                                 serial_blocking_read_timeout=blocking_read_timeout,
                                 io_target=args.io_target)
     simulator.run()
