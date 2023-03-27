@@ -154,6 +154,8 @@ class UbxGpsSimulator:
                  serial_baudrates_accepted,
                  serial_blocking_read_timeout,
                  io_target):
+        self.startup_time_millis = 0
+        self.message_rates = dict()  # start with an empty dict
         self.queued_replies = []
         self.io_target = io_target
         self.baudrates_accepted = serial_baudrates_accepted
@@ -212,15 +214,20 @@ class UbxGpsSimulator:
             code = "???-???"
         return code
 
+    @staticmethod
+    def now():
+        timestamp = pendulum.now()
+        millis = int(timestamp.format('x'))  # cannot just use the attribute 'microseconds' due to wrap-around
+        return timestamp, millis
+
     def run(self):
-        last_tx_time_millis = None
-        startup_time = pendulum.now().microsecond
+        _, self.startup_time_millis = self.now()
+        print(f"... Startup time: now={self.startup_time_millis/1000:.3f} s (used as reference 0.0 s)")
 
         # run the state machine, receiving and processing byte by byte;
         # please note that this script runs single-threaded and does both RX and TX
         rx_state = self.RxState.WAIT_SYNC_1
         msg = {}
-        rx_byte = None
 
         # enter endless loop and process one received byte at a time
         while True:
@@ -297,46 +304,52 @@ class UbxGpsSimulator:
             self.send_queued_replies()
 
             # handle cyclic transmissions
-            do_cyclic_transmit = False
-            transmit_period = 1e3  # milliseconds, i.e. 1 second; TODO/FIXME: use dynamic rates for every message ID!
-            # TODO/FIXME: check for time and if some message countdowns have elapsed
-            #             depending on their rates and cyclic data needs to be sent
-            current_time = pendulum.now()
-            current_time_millis = int(
-                current_time.format('x'))  # cannot just use the attribute 'microsends' due to wrap-around
-            current_time_of_week = self.get_time_of_week(current_time)
+            current_time, current_time_millis = self.now()
 
-            if last_tx_time_millis is not None:
-                time_diff = current_time_millis - last_tx_time_millis
-                if time_diff >= transmit_period:
-                    do_cyclic_transmit = True
-            else:
-                # there is no last time; so let's start with the first time to transmit something
-                do_cyclic_transmit = True
+            if self.check_cyclic_tx(millis=current_time_millis, msg_class=b'\x01', msg_id=b'\x02'):
+                self.send_nav_posllh(self.get_time_of_week(current_time),
+                                     lon=11.574444, lat=48.139722,
+                                     height=519.0, hmsl=519.0,
+                                     hacc=0, vacc=0)
 
-            # FIXME: actually the following cyclic transmission is prepared;
-            #        BUT: do not send "unreqeusted" messages yet without having rates properly configured!
-            if False:  # do_cyclic_transmit:
-                print(f"[{current_time.format('HH:mm:ss')}.{current_time.microsecond // 1000:03}] Cyclic transmit!")
-                print()
-
-                self.send_nav_posllh(ser,
-                                current_time_of_week,
-                                lon=11.574444, lat=48.139722,
-                                height=519.0, hmsl=519.0,
-                                hacc=0, vacc=0)
-                # - send_nav_dop(ser)
-                # - send_nav_status(ser)
-                # - send_nav_velned(ser)
-                # - send_nav_sol(ser)  # FIXME: not implemented yet
-                self.send_nav_timegps(ser,
-                                 current_time_of_week,
-                                 frac_time_of_week=0,
-                                 week=current_time.week_of_year)
-                # - send_nav_timeutc(ser)  # FIXME: not implemented yet
-                # - send_mon_hw(ser)  # FIXME: not implemented yet
-
-                last_tx_time_millis = current_time_millis  # just "now"
+            # do_cyclic_transmit = False
+            # transmit_period = 1e3  # milliseconds, i.e. 1 second; TODO/FIXME: use dynamic rates for every message ID!
+            # # TODO/FIXME: check for time and if some message countdowns have elapsed
+            # #             depending on their rates and cyclic data needs to be sent
+            # current_time = pendulum.now()
+            # current_time_millis = int(
+            #     current_time.format('x'))  # cannot just use the attribute 'microsends' due to wrap-around
+            # current_time_of_week = self.get_time_of_week(current_time)
+            #
+            # if last_tx_time_millis is not None:
+            #     time_diff = current_time_millis - last_tx_time_millis
+            #     if time_diff >= transmit_period:
+            #         do_cyclic_transmit = True
+            # else:
+            #     # there is no last time; so let's start with the first time to transmit something
+            #     do_cyclic_transmit = True
+            #
+            # # FIXME: actually the following cyclic transmission is prepared;
+            # #        BUT: do not send "unreqeusted" messages yet without having rates properly configured!
+            # if False:  # do_cyclic_transmit:
+            #     print(f"[{current_time.format('HH:mm:ss')}.{current_time.microsecond // 1000:03}] Cyclic transmit!")
+            #     print()
+            #
+            #     self.send_nav_posllh(current_time_of_week,
+            #                     lon=11.574444, lat=48.139722,
+            #                     height=519.0, hmsl=519.0,
+            #                     hacc=0, vacc=0)
+            #     # - send_nav_dop(ser)
+            #     # - send_nav_status(ser)
+            #     # - send_nav_velned(ser)
+            #     # - send_nav_sol(ser)  # FIXME: not implemented yet
+            #     self.send_nav_timegps(current_time_of_week,
+            #                      frac_time_of_week=0,
+            #                      week=current_time.week_of_year)
+            #     # - send_nav_timeutc(ser)  # FIXME: not implemented yet
+            #     # - send_mon_hw(ser)  # FIXME: not implemented yet
+            #
+            #     last_tx_time_millis = current_time_millis  # just "now"
 
     def process_message(self, msg):
         # process message, i.e.
@@ -367,12 +380,14 @@ class UbxGpsSimulator:
                 send_ack = self.process_cfg_tp(msg)
             elif msg['id'] == b'\x09':
                 send_ack = self.process_cfg_cfg(msg)
+            elif msg['id'] == b'\x16':
+                send_ack = self.process_cfg_sbas(msg)
             elif msg['id'] == b'\x24':
                 send_ack = self.process_cfg_nav5(msg)
             elif msg['id'] == b'\x34':
                 send_ack = self.process_cfg_rinv(msg)
             else:
-                print(f"    {self.get_msg_code(msg)}")
+                print(f"!!! Received {self.get_msg_code(msg)} - processing not implemented yet (TODO)")
 
             if send_ack in [True, False]:
                 # send ACK-ACK or ACK-NAK
@@ -386,7 +401,8 @@ class UbxGpsSimulator:
         #    process_aid_alpsrv(msg)
         elif msg['class'] == b'\x0b' and msg['id'] == b'\x50':
             self.process_aid_alp(msg)
-            self.send_ack_ack(msg['class'], msg['id'])  # allow to send next chunk directly
+            # self.send_ack_ack(msg['class'], msg['id'])  # allow to send next chunk directly
+            # TODO: investigate; at least OBS firmware gives an ACK overrun! may have been wrong in the firmware or here
         else:
             print(f"    {self.get_msg_code(msg)} (unhandled)")
             print()  # Improve readability of log by adding an empty line
@@ -422,7 +438,8 @@ class UbxGpsSimulator:
     def process_cfg_prt(self, msg):
         assert msg['class'] == b'\x06' and msg['id'] == b'\x00', "Unexpected call."
         payload_len = len(msg['payload'])
-        assert payload_len in [0, 1, 20], "Unexpected CFG-MSG payload length (expecting 0, 1 or 20 bytes)."
+        assert payload_len in [0, 1, 20], f"Unexpected {self.get_msg_code(msg)} " \
+                                          f"payload length (expecting 0, 1 or 20 bytes)."
         # FIXME: possibly also multiple of 20 bytes (i.e. multiple 'configuration units')
 
         if payload_len == 0:
@@ -657,7 +674,8 @@ class UbxGpsSimulator:
     def process_cfg_msg(self, msg):
         assert msg['class'] == b'\x06' and msg['id'] == b'\x01', "Unexpected call."
         payload_len = len(msg['payload'])
-        assert payload_len in [2, 3, 8], "Unexpected CFG-MSG payload length (expecting 2, 3 or 8 bytes)."
+        assert payload_len in [2, 3, 8], f"Unexpected {self.get_msg_code(msg)} " \
+                                         f"payload length (expecting 2, 3 or 8 bytes)."
 
         pl_msg_class = msg['payload'][0]
         pl_msg_id = msg['payload'][1]
@@ -666,7 +684,7 @@ class UbxGpsSimulator:
         pl_msg_code = self.get_msg_code(pl_msg)
         print(f"    {self.get_msg_code(msg)} for class 0x{pl_msg_class:02X}, ID 0x{pl_msg_id:02X} ({pl_msg_code}).")
         if payload_len == 2:
-            print("      Poll message configuration.")
+            print("      Poll message configuration. (TODO)")
             # TODO: should queue reply with message configuration (ACK comes first)
             # self.queue_reply(msg)
         elif payload_len == 3:
@@ -687,14 +705,51 @@ class UbxGpsSimulator:
         return True  # allow caller to send ACK-ACK
 
     def set_msg_rate(self, msg_class, msg_id, rate):
-        print(f"      Requested rate change: class=0x{msg_class:02X}, ID=0x{msg_id:02X}, rate={rate} (TODO)")
-        # TODO/FIXME: implement
-        return
+        # add or overwrite message rate for specific class and ID
+        base_rate_millis = 1000  # assume a base rate of 1 Hz; actually store a "base period" of 1000 ms
+        print(f"      Requested rate change: class=0x{msg_class:02X}, ID=0x{msg_id:02X}, rate={rate}")
+
+        # check if message class is in dict, otherwise add it
+        if msg_class not in self.message_rates:
+            self.message_rates[msg_class] = dict()
+        if msg_id not in self.message_rates[msg_class]:
+            self.message_rates[msg_class][msg_id] = dict()
+        self.message_rates[msg_class][msg_id]['rate'] = rate * base_rate_millis  # store "rate" (actually period in ms)
+        # print(f"      Updated message rates to: {self.message_rates}")
+
+    def check_cyclic_tx(self, millis, msg_class, msg_id):
+        # message class and ID come in as 'bytes'
+        msg_class = int.from_bytes(msg_class, 'little')
+        msg_id = int.from_bytes(msg_id, 'little')
+
+        if msg_class not in self.message_rates:
+            return False
+        if msg_id not in self.message_rates[msg_class]:
+            return False
+        if 'rate' not in self.message_rates[msg_class][msg_id]:
+            return False
+        if self.message_rates[msg_class][msg_id]['rate'] == 0:
+            return False
+
+        if 'last_cyclic_tx' not in self.message_rates[msg_class][msg_id]:
+            # first transmission; make sure that the next check is true
+            self.message_rates[msg_class][msg_id]['last_cyclic_tx'] = -self.message_rates[msg_class][msg_id]['rate']
+
+        last = self.message_rates[msg_class][msg_id]['last_cyclic_tx']
+        if millis >= last + self.message_rates[msg_class][msg_id]['rate']:
+            print(f"... Going to send message with class=0x{msg_class:02X}, ID=0x{msg_id:02X}; "
+                  f"last={(last-self.startup_time_millis)/1000:.3f} s, "
+                  f"now={(millis-self.startup_time_millis)/1000:.3f} s")
+            self.message_rates[msg_class][msg_id]['last_cyclic_tx'] = millis  # assume we directly send it
+            return True  # ready to send
+        else:
+            return False
 
     def process_cfg_cfg(self, msg):
         assert msg['class'] == b'\x06' and msg['id'] == b'\x09', "Unexpected call."
         payload_len = len(msg['payload'])
-        assert payload_len in [12, 13], "Unexpected CFG-CFG payload length (expecting 12 or 13 bytes)."
+        assert payload_len in [12, 13], f"Unexpected {self.get_msg_code(msg)} " \
+                                        f"payload length (expecting 12 or 13 bytes)."
 
         pl_clear_mask = msg['payload'][0:4]
         pl_save_mask = msg['payload'][4:8]
@@ -713,10 +768,33 @@ class UbxGpsSimulator:
         print(f"      Load mask:  {pl_load_mask}")
         return True  # allow caller to send ACK-ACK
 
+    def process_cfg_sbas(self, msg):
+        assert msg['class'] == b'\x06' and msg['id'] == b'\x16', "Unexpected call."
+        payload_len = len(msg['payload'])
+        assert payload_len in [0, 8], f"Unexpected {self.get_msg_code(msg)} payload length (expecting 0 or 8 bytes)."
+
+        print(f"    {self.get_msg_code(msg)} (SBAS Configuration)")
+        if payload_len == 0:
+            print("      Poll SBAS configuration.")
+            # TODO: should queue reply with SBAS configuration (ACK comes first)
+            # self.queue_reply(msg)
+        else:
+            mode = msg['payload'][0]
+            usage = msg['payload'][1]
+            max_sbas = msg['payload'][2]
+            scan_mode2 = msg['payload'][3]
+            scan_mode1 = msg['payload'][4:8]
+            print(f"      Mode:      0x{mode:02X}")
+            print(f"      Usage:     0x{usage:02X}")
+            print(f"      Max. SBAS: {max_sbas}")
+            print(f"      scanmode2: {scan_mode2}")
+            print(f"      scanmode1: {scan_mode1}")
+        return True  # allow caller to send ACK-ACK
+
     def process_cfg_tp(self, msg):
         assert msg['class'] == b'\x06' and msg['id'] == b'\x07', "Unexpected call."
         payload_len = len(msg['payload'])
-        assert payload_len in [0, 20], "Unexpected CFG-CFG payload length (expecting 12 or 13 bytes)."
+        assert payload_len in [0, 20], f"Unexpected {self.get_msg_code(msg)} payload length (expecting 12 or 13 bytes)."
 
         print(f"    {self.get_msg_code(msg)} (TimePulse Parameters)")
         if payload_len == 0:
@@ -746,7 +824,7 @@ class UbxGpsSimulator:
     def process_cfg_nav5(self, msg):
         assert msg['class'] == b'\x06' and msg['id'] == b'\x24', "Unexpected call."
         payload_len = len(msg['payload'])
-        assert payload_len in [0, 36], "Unexpected CFG-CFG payload length (expecting 0 or 36 bytes)."
+        assert payload_len in [0, 36], f"Unexpected {self.get_msg_code(msg)} payload length (expecting 0 or 36 bytes)."
 
         print(f"    {self.get_msg_code(msg)} (Navigation Engine Settings)")
         if payload_len == 0:
@@ -789,7 +867,7 @@ class UbxGpsSimulator:
             for target_id in range(0, num_targets):  # blocks for "I/O target" aka "configuration unit"
                 print(f"      Target ID: #{target_id}", end="")
                 if target_id == self.io_target:
-                    print("      (*)") # FIXME: prints marker that this info is relevant for us, but does not make use of it
+                    print("      (*)")  # print marker that info is relevant for us; FIXME: do make use of it
                 else:
                     print()
                 protocol_id = msg['payload'][target_id*10 + 0]
@@ -915,7 +993,7 @@ def run():
 
     # blocking time (in seconds) for every blocking read; has influence of the jitter of the periodic transmits
     # (as this script is currently single-threaded and switches between receiving and transmitting)
-    blocking_read_timeout = 0.05
+    blocking_read_timeout = 0.03
 
     parser = argparse.ArgumentParser(description='%(prog)s '
                                                  'Run simulated UBX GPX receiver.')
@@ -932,11 +1010,11 @@ def run():
 
     # "A target in the context of the I/O system is an I/O port."
     parser.add_argument('-t', '--io-target',
-                       type=int,
-                       help='I/O target ID '
-                            f"(default: {io_target_default}, "
-                            f"possible: {', '.join(str(t) for t in io_targets_accepted)})",
-                       default=io_target_default)
+                        type=int,
+                        help='I/O target ID '
+                             f"(default: {io_target_default}, "
+                             f"possible: {', '.join(str(t) for t in io_targets_accepted)})",
+                        default=io_target_default)
 
     args = parser.parse_args()
 
