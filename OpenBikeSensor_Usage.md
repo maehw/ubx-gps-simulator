@@ -5,9 +5,7 @@ Example: Debugging the [OpenBikeSensor](https://www.openbikesensor.org/) [firmwa
 ```
 > python3 ubx_gps_simulator.py /dev/tty.usbserial-DEADBEEF
 
-Opened serial port '/dev/tty.usbserial-DEADBEEF' with a baudrate of 9600 and serial blocking read timeout of 0.03 seconds. Simulating I/O target #1.
-
-... Startup time: now=1679926349.879 s (used as reference 0.0 s)
+... Startup time: now=1679927703.867 s (used as reference 0.0 s)
 >>> Received VALID message: class 0x06, ID 0x00 w/ payload b'\x01\x00\x00\x00\xd0\x08\x00\x00\x00\xc2\x01\x00\x03\x00\x01\x00\x00\x00\x00\x00' (length: 20).
       Port ID:        #1(*)
       TX ready:       b'\x00\x00'
@@ -142,8 +140,8 @@ Opened serial port '/dev/tty.usbserial-DEADBEEF' with a baudrate of 9600 and ser
       Requested rate change: class=0x01, ID=0x02, rate=1
 <<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x01\x0f8'
 
-... Going to send message with class=0x01, ID=0x02; last=-1679926350.879 s, now=30.182 s
-<<< Sending NAV-POSLLH message: b'\xb5b\x01\x02\x1c\x00\x1d\xcfz\x03\xb8\x1e\xe6\x06\xe4\x89\xb1\x1cX\xeb\x07\x00\x07\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xd7\xe4'
+... Going to send message with class=0x01, ID=0x02; last=-1679927704.867 s, now=94.936 s
+<<< Sending NAV-POSLLH message: b'\xb5b\x01\x02\x1c\x00\x13u\x90\x03\xb8\x1e\xe6\x06\xe4\x89\xb1\x1cX\xeb\x07\x00\x07\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x89\x8a'
 
 >>> Received VALID message: class 0x06, ID 0x01 w/ payload b'\x01\x04\x00\x01\x00\x00\x00\x00' (length: 8).
     CFG-MSG for class 0x01, ID 0x04 (NAV-DOP).
@@ -162,6 +160,9 @@ Opened serial port '/dev/tty.usbserial-DEADBEEF' with a baudrate of 9600 and ser
       Rates for 6 I/O targets: 0, 1(*),  0,  0, 0, 0
       Requested rate change: class=0x01, ID=0x12, rate=1
 <<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x01\x0f8'
+
+... Going to send message with class=0x01, ID=0x12; last=-1679927704.867 s, now=94.984 s
+<<< Sending NAV-VELNED message: b'\xb5b\x01\x12$\x00Cu\x90\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x82,'
 
 >>> Received VALID message: class 0x06, ID 0x01 w/ payload b'\x01 \x00\x01\x00\x00\x00\x00' (length: 8).
     CFG-MSG for class 0x01, ID 0x20 (NAV-TIMEGPS).
@@ -333,14 +334,14 @@ Opened serial port '/dev/tty.usbserial-DEADBEEF' with a baudrate of 9600 and ser
       Requested rate change: class=0x01, ID=0x04, rate=1
 <<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x01\x0f8'
 
+... Going to send message with class=0x01, ID=0x02; last=94.936 s, now=95.938 s
+<<< Sending NAV-POSLLH message: b'\xb5b\x01\x02\x1c\x00\xfdx\x90\x03\xb8\x1e\xe6\x06\xe4\x89\xb1\x1cX\xeb\x07\x00\x07\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00vs'
+
 >>> Received VALID message: class 0x06, ID 0x01 w/ payload b'\x01\x06\x00\x01\x00\x00\x00\x00' (length: 8).
     CFG-MSG for class 0x01, ID 0x06 (NAV-SOL).
       Rates for 6 I/O targets: 0, 1(*),  0,  0, 0, 0
       Requested rate change: class=0x01, ID=0x06, rate=1
 <<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x01\x0f8'
-
-... Going to send message with class=0x01, ID=0x02; last=30.182 s, now=31.184 s
-<<< Sending NAV-POSLLH message: b'\xb5b\x01\x02\x1c\x00\x07\xd3z\x03\xb8\x1e\xe6\x06\xe4\x89\xb1\x1cX\xeb\x07\x00\x07\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xc5\xe8'
 
 >>> Received VALID message: class 0x06, ID 0x01 w/ payload b'\x01\x12\x00\x01\x00\x00\x00\x00' (length: 8).
     CFG-MSG for class 0x01, ID 0x12 (NAV-VELNED).
@@ -353,6 +354,9 @@ Opened serial port '/dev/tty.usbserial-DEADBEEF' with a baudrate of 9600 and ser
       Rates for 6 I/O targets: 0, 1(*),  0,  0, 0, 0
       Requested rate change: class=0x01, ID=0x20, rate=1
 <<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x01\x0f8'
+
+... Going to send message with class=0x01, ID=0x12; last=94.984 s, now=95.986 s
+<<< Sending NAV-VELNED message: b'\xb5b\x01\x12$\x00-y\x90\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00p\xa0'
 
 >>> Received VALID message: class 0x06, ID 0x24 w/ payload b"\xff\xff\x03\x03\x00\x00\x00\x00\x10'\x00\x00\x05\x00\xfa\x00\xfa\x00d\x00,\x01P\x00\x00\x00\x00\x00\x14\x00\x00\x00\x00\x00\x00\x00" (length: 36).
     CFG-NAV5 (Navigation Engine Settings)
@@ -442,11 +446,17 @@ Opened serial port '/dev/tty.usbserial-DEADBEEF' with a baudrate of 9600 and ser
       Requested rate change: class=0x0A, ID=0x09, rate=2
 <<< Sending ACK-ACK response: b'\xb5b\x05\x01\x02\x00\x06\x01\x0f8'
 
-... Going to send message with class=0x01, ID=0x02; last=31.184 s, now=32.215 s
-<<< Sending NAV-POSLLH message: b'\xb5b\x01\x02\x1c\x00\x0e\xd7z\x03\xb8\x1e\xe6\x06\xe4\x89\xb1\x1cX\xeb\x07\x00\x07\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xd0\x18'
+... Going to send message with class=0x01, ID=0x02; last=95.938 s, now=96.954 s
+<<< Sending NAV-POSLLH message: b'\xb5b\x01\x02\x1c\x00\xf5|\x90\x03\xb8\x1e\xe6\x06\xe4\x89\xb1\x1cX\xeb\x07\x00\x07\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00r\xff'
 
-... Going to send message with class=0x01, ID=0x02; last=32.215 s, now=33.215 s
-<<< Sending NAV-POSLLH message: b'\xb5b\x01\x02\x1c\x00\xf6\xdaz\x03\xb8\x1e\xe6\x06\xe4\x89\xb1\x1cX\xeb\x07\x00\x07\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xbb\xc9'
+... Going to send message with class=0x01, ID=0x12; last=95.986 s, now=96.987 s
+<<< Sending NAV-VELNED message: b'\xb5b\x01\x12$\x00\x16}\x90\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00]\xf0'
+
+... Going to send message with class=0x01, ID=0x02; last=96.954 s, now=97.970 s
+<<< Sending NAV-POSLLH message: b'\xb5b\x01\x02\x1c\x00\xed\x80\x90\x03\xb8\x1e\xe6\x06\xe4\x89\xb1\x1cX\xeb\x07\x00\x07\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00n\x8b'
+
+... Going to send message with class=0x01, ID=0x12; last=96.987 s, now=98.004 s
+<<< Sending NAV-VELNED message: b'\xb5b\x01\x12$\x00\x0f\x81\x90\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00Z\x80'
 ```
 
 From the logging console of the OBS firmware (running on the ESP32), without having any peripheral connected:
@@ -457,24 +467,27 @@ From the logging console of the OBS firmware (running on the ESP32), without hav
 [E][gps.cpp:349] sendAndWaitForAck(): Retry to send 0x3406
 [E][gps.cpp:349] sendAndWaitForAck(): Retry to send 0x3406
 [E][gps.cpp:354] sendAndWaitForAck(): Failed to send cfg. 0x3406 NAK: 0 
-...
 [W][gps.cpp:639] encode(): Unexpected GPS char in state null: ...
 ...
 [E][gps.cpp:349] sendAndWaitForAck(): Retry to send 0x3406
 [I][gps.cpp:426] addStatisticsMessage(): New: RINV: Notice: no data saved!
 [I][gps.cpp:834] parseUbxMessage(): GPS config from Notice: no data saved! outdated - will trigger update.
 [I][gps.cpp:834] parseUbxMessage(): GPS config from Notice: no data saved! outdated - will trigger update.
+[W][gps.cpp:1192] prepareGpsData(): Had to switch incomplete record tow: 59798803 pos: 1, info: 0, hdop: 0, vel: 0
 [I][gps.cpp:426] addStatisticsMessage(): New: OBS: Did update GPS settings.
 [I][gps.cpp:173] configureGpsModule(): Config GPS done!
 [I][gps.cpp:177] softResetGps(): Soft-RESET GPS!
 [I][gps.cpp:834] parseUbxMessage(): GPS config from Notice: no data saved! outdated - will trigger update.
-[W][gps.cpp:1192] prepareGpsData(): Had to switch incomplete record tow: 58380061 pos: 1, info: 0, hdop: 0, vel: 0
+[W][gps.cpp:1192] prepareGpsData(): Had to switch incomplete record tow: 59798851 pos: 0, info: 0, hdop: 0, vel: 1
+[W][gps.cpp:1192] prepareGpsData(): Had to switch incomplete record tow: 59799805 pos: 1, info: 0, hdop: 0, vel: 0
 [I][gps.cpp:173] configureGpsModule(): Config GPS done!
 ...
 [W][gps.cpp:214] enableAlpIfDataIsAvailable(): Disable ALP - no data!
 [I][gps.cpp:834] parseUbxMessage(): GPS config from Notice: no data saved! outdated - will trigger update.
 ...
-[W][gps.cpp:1192] prepareGpsData(): Had to switch incomplete record tow: 58381063 pos: 1, info: 0, hdop: 0, vel: 0
-[W][gps.cpp:1192] prepareGpsData(): Had to switch incomplete record tow: 58382094 pos: 1, info: 0, hdop: 0, vel: 0
+[W][gps.cpp:1192] prepareGpsData(): Had to switch incomplete record tow: 59799853 pos: 0, info: 0, hdop: 0, vel: 1
+[W][gps.cpp:1192] prepareGpsData(): Had to switch incomplete record tow: 59800821 pos: 1, info: 0, hdop: 0, vel: 0
+[W][gps.cpp:1192] prepareGpsData(): Had to switch incomplete record tow: 59800854 pos: 0, info: 0, hdop: 0, vel: 1
+[W][gps.cpp:1192] prepareGpsData(): Had to switch incomplete record tow: 59801837 pos: 1, info: 0, hdop: 0, vel: 0
 ...
 ```

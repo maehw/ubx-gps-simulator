@@ -311,45 +311,20 @@ class UbxGpsSimulator:
                                      lon=11.574444, lat=48.139722,
                                      height=519.0, hmsl=519.0,
                                      hacc=0, vacc=0)
+            if self.check_cyclic_tx(millis=current_time_millis, msg_class=b'\x01', msg_id=b'\x12'):
+                self.send_nav_velned(self.get_time_of_week(current_time))
 
-            # do_cyclic_transmit = False
-            # transmit_period = 1e3  # milliseconds, i.e. 1 second; TODO/FIXME: use dynamic rates for every message ID!
-            # # TODO/FIXME: check for time and if some message countdowns have elapsed
-            # #             depending on their rates and cyclic data needs to be sent
-            # current_time = pendulum.now()
-            # current_time_millis = int(
-            #     current_time.format('x'))  # cannot just use the attribute 'microsends' due to wrap-around
-            # current_time_of_week = self.get_time_of_week(current_time)
-            #
-            # if last_tx_time_millis is not None:
-            #     time_diff = current_time_millis - last_tx_time_millis
-            #     if time_diff >= transmit_period:
-            #         do_cyclic_transmit = True
-            # else:
-            #     # there is no last time; so let's start with the first time to transmit something
-            #     do_cyclic_transmit = True
-            #
-            # # FIXME: actually the following cyclic transmission is prepared;
-            # #        BUT: do not send "unreqeusted" messages yet without having rates properly configured!
-            # if False:  # do_cyclic_transmit:
-            #     print(f"[{current_time.format('HH:mm:ss')}.{current_time.microsecond // 1000:03}] Cyclic transmit!")
-            #     print()
-            #
-            #     self.send_nav_posllh(current_time_of_week,
-            #                     lon=11.574444, lat=48.139722,
-            #                     height=519.0, hmsl=519.0,
-            #                     hacc=0, vacc=0)
-            #     # - send_nav_dop(ser)
-            #     # - send_nav_status(ser)
-            #     # - send_nav_velned(ser)
-            #     # - send_nav_sol(ser)  # FIXME: not implemented yet
-            #     self.send_nav_timegps(current_time_of_week,
-            #                      frac_time_of_week=0,
-            #                      week=current_time.week_of_year)
-            #     # - send_nav_timeutc(ser)  # FIXME: not implemented yet
-            #     # - send_mon_hw(ser)  # FIXME: not implemented yet
-            #
-            #     last_tx_time_millis = current_time_millis  # just "now"
+            # TODO:
+            # - send_nav_dop(ser)
+            # - send_nav_status(ser)
+            # - send_nav_sol(ser)  # FIXME: not implemented yet
+            # - self.send_nav_timegps(current_time_of_week,
+            #                 frac_time_of_week=0,
+            #                 week=current_time.week_of_year)
+            # - send_nav_timeutc(ser)  # FIXME: not implemented yet
+            # - send_mon_hw(ser)  # FIXME: not implemented yet
+
+            last_tx_time_millis = current_time_millis  # just "now"
 
     def process_message(self, msg):
         # process message, i.e.
@@ -616,16 +591,17 @@ class UbxGpsSimulator:
 
     def send_nav_velned(self,
                         time_of_week=None,
-                        vel_n=0,
-                        vel_e=0,
-                        vel_d=0,
-                        speed=0,
-                        ground_speed=0,
-                        heading=0,
-                        speed_acc_est=0,
-                        heading_acc_est=0):
+                        vel_n=0,  # cm/s
+                        vel_e=0,  # cm/s
+                        vel_d=0,  # cm/s
+                        speed=0,  # cm/s
+                        ground_speed=0,  # cm/s
+                        heading=0,  # deg
+                        speed_acc_est=0,  # cm/s
+                        heading_acc_est=0):  # deg
         sync = b'\xb5\x62'
-        body = b'\x01\x12\x24\x00'  # message body length is 36 bytes
+        msg = {'class': b'\x01', 'id': b'\x12'}
+        body = msg['class'] + msg['id'] + b'\x24\x00'  # length of inner payload is 36 bytes
         vel_n = int(vel_n).to_bytes(4, 'little')
         vel_e = int(vel_e).to_bytes(4, 'little')
         vel_d = int(vel_d).to_bytes(4, 'little')
@@ -639,12 +615,12 @@ class UbxGpsSimulator:
         itow = time_of_week.to_bytes(4, 'little')
         body += itow + vel_n + vel_e + vel_d + speed + ground_speed + heading
         body += speed_acc_est + heading_acc_est
-        assert len(body) == 36, "Unexpected message body length."
+        assert len(body) == (4+36), "Unexpected message body length."
         cs = self.calc_fletcher_checksum(body)
-        msg = sync + body + cs
-        print(f"<<< Sending {self.get_msg_code(msg)} message: {msg}")
+        msg['payload'] = sync + body + cs
+        print(f"<<< Sending {self.get_msg_code(msg)} message: {msg['payload']}")
         print()  # Improve readability of log by adding an empty line
-        self.ser.write(msg)
+        self.ser.write(msg['payload'])
 
     def send_nav_timegps(self,
                          time_of_week=None,
