@@ -221,8 +221,10 @@ class UbxGpsSimulator:
         return timestamp, millis
 
     def run(self):
-        _, self.startup_time_millis = self.now()
-        print(f"... Startup time: now={self.startup_time_millis/1000:.3f} s (used as reference 0.0 s)")
+        _, self.startup_time_millis = self.now()  # get startup time and store for later usage
+        base_rate_millis = 1000  # assume a base rate of 1 Hz; actually store a "base period" of 1000 ms
+        base_rate_count = 0  # counter for integer multiple intervals of base rate
+        # print(f"... Startup time: now={self.startup_time_millis/1000:.3f} s")  # print for debugging only
 
         # run the state machine, receiving and processing byte by byte;
         # please note that this script runs single-threaded and does both RX and TX
@@ -303,28 +305,35 @@ class UbxGpsSimulator:
             # process queued transmissions
             self.send_queued_replies()
 
-            # handle cyclic transmissions
+            # handle cyclic transmissions ...
             current_time, current_time_millis = self.now()
+            # ... using the following mechanics
+            # - so that there may be phase noise but there shall not be frequency drift
+            # - make sure that they are all in sync and use the same timestamp for the cyclic messages
+            if current_time_millis > self.startup_time_millis + base_rate_count * base_rate_millis:
+                # interesting message for debugging purpose:
+                # print(f"... Base rate trigger [{current_time.format('HH:mm:ss')}]. Ready for cyclic messages.")
 
-            if self.check_cyclic_tx(millis=current_time_millis, msg_class=b'\x01', msg_id=b'\x02'):
-                self.send_nav_posllh(self.get_time_of_week(current_time),
-                                     lon=11.574444, lat=48.139722,
-                                     height=519.0, hmsl=519.0,
-                                     hacc=0, vacc=0)
-            if self.check_cyclic_tx(millis=current_time_millis, msg_class=b'\x01', msg_id=b'\x12'):
-                self.send_nav_velned(self.get_time_of_week(current_time))
+                if self.check_cyclic_tx(base_rate_count, msg_class=b'\x01', msg_id=b'\x02'):
+                    self.send_nav_posllh(self.get_time_of_week(current_time),
+                                         lon=11.574444, lat=48.139722,
+                                         height=519.0, hmsl=519.0,
+                                         hacc=0, vacc=0)
+                if self.check_cyclic_tx(base_rate_count, msg_class=b'\x01', msg_id=b'\x12'):
+                    self.send_nav_velned(self.get_time_of_week(current_time))
+                if self.check_cyclic_tx(base_rate_count, msg_class=b'\x01', msg_id=b'\x06'):
+                    self.send_nav_sol(self.get_time_of_week(current_time))
+                if self.check_cyclic_tx(base_rate_count, msg_class=b'\x01', msg_id=b'\x04'):
+                    self.send_nav_dop(self.get_time_of_week(current_time))
+                # TODO:
+                # - send_nav_status(ser)
+                # - self.send_nav_timegps(current_time_of_week,
+                #                 frac_time_of_week=0,
+                #                 week=current_time.week_of_year)
+                # - send_nav_timeutc(ser)  # FIXME: not implemented yet
+                # - send_mon_hw(ser)  # FIXME: not implemented yet
 
-            # TODO:
-            # - send_nav_dop(ser)
-            # - send_nav_status(ser)
-            # - send_nav_sol(ser)  # FIXME: not implemented yet
-            # - self.send_nav_timegps(current_time_of_week,
-            #                 frac_time_of_week=0,
-            #                 week=current_time.week_of_year)
-            # - send_nav_timeutc(ser)  # FIXME: not implemented yet
-            # - send_mon_hw(ser)  # FIXME: not implemented yet
-
-            last_tx_time_millis = current_time_millis  # just "now"
+                base_rate_count += 1
 
     def process_message(self, msg):
         # process message, i.e.
@@ -543,24 +552,25 @@ class UbxGpsSimulator:
                      ndop=0,
                      edop=0):
         sync = b'\xb5\x62'
-        body = b'\x01\x04\x12\x00'  # length is 18 bytes
-        gdop = int(gdop * 100).to_bytes(4, 'little')
-        pdop = int(pdop * 100).to_bytes(4, 'little')
-        tdop = int(tdop * 100).to_bytes(4, 'little')
-        vdop = int(vdop * 100).to_bytes(4, 'little')
-        hdop = int(hdop * 100).to_bytes(4, 'little')
-        ndop = int(ndop * 100).to_bytes(4, 'little')
-        edop = int(edop * 100).to_bytes(4, 'little')
+        msg = {'class': b'\x01', 'id': b'\x04'}
+        body = msg['class'] + msg['id'] + b'\x12\x00'  # length of inner payload is 18 bytes
+        gdop = int(gdop * 100).to_bytes(2, 'little')
+        pdop = int(pdop * 100).to_bytes(2, 'little')
+        tdop = int(tdop * 100).to_bytes(2, 'little')
+        vdop = int(vdop * 100).to_bytes(2, 'little')
+        hdop = int(hdop * 100).to_bytes(2, 'little')
+        ndop = int(ndop * 100).to_bytes(2, 'little')
+        edop = int(edop * 100).to_bytes(2, 'little')
         if time_of_week is None:
             time_of_week = self.get_time_of_week()
         itow = time_of_week.to_bytes(4, 'little')
-        body += itow + gdop + pdop + tdop + vdop + hdop + edop  # FIXME: all fields are actually UNSIGNED integers!
-        assert len(body) == 18, "Unexpected message body length."
+        body += itow + gdop + pdop + tdop + vdop + hdop + ndop + edop
+        assert len(body) == (4+18), "Unexpected message body length."
         cs = self.calc_fletcher_checksum(body)
-        msg = sync + body + cs
-        print(f"<<< Sending {self.get_msg_code(msg)} message: {msg}")
+        msg['payload'] = sync + body + cs
+        print(f"<<< Sending {self.get_msg_code(msg)} message: {msg['payload']}")
         print()  # Improve readability of log by adding an empty line
-        self.ser.write(msg)
+        self.ser.write(msg['payload'])
 
     def send_nav_status(self,
                         time_of_week=None,
@@ -622,6 +632,52 @@ class UbxGpsSimulator:
         print()  # Improve readability of log by adding an empty line
         self.ser.write(msg['payload'])
 
+    def send_nav_sol(self,
+                     time_of_week=None,
+                     frac_time_of_week=0,
+                     week=0,
+                     gps_fix=0,
+                     flags=b'\x00',
+                     ecef_x=0,
+                     ecef_y=0,
+                     ecef_z=0,
+                     pos_acc_est=0,
+                     ecef_vx=0,
+                     ecef_vy=0,
+                     ecef_vz=0,
+                     speed_acc_est=0,
+                     pos_dop=0,
+                     num_sv=0):
+        sync = b'\xb5\x62'
+        msg = {'class': b'\x01', 'id': b'\x06'}
+        body = msg['class'] + msg['id'] + b'\x34\x00'  # length of inner payload is 52 bytes
+        frac_time_of_week = int(frac_time_of_week).to_bytes(4, 'little')
+        week = int(week).to_bytes(2, 'little')
+        gps_fix = int(gps_fix).to_bytes(1, 'little')
+        ecef_x = int(ecef_x).to_bytes(4, 'little', signed=True)
+        ecef_y = int(ecef_y).to_bytes(4, 'little', signed=True)
+        ecef_z = int(ecef_z).to_bytes(4, 'little', signed=True)
+        pos_acc_est = int(pos_acc_est).to_bytes(4, 'little', signed=False)
+        ecef_vx = int(ecef_vx).to_bytes(4, 'little', signed=True)
+        ecef_vy = int(ecef_vy).to_bytes(4, 'little', signed=True)
+        ecef_vz = int(ecef_vz).to_bytes(4, 'little', signed=True)
+        speed_acc_est = int(speed_acc_est).to_bytes(4, 'little', signed=False)
+        pos_dop = int(pos_dop * 100).to_bytes(2, 'little', signed=False)
+        num_sv = int(num_sv * 100).to_bytes(1, 'little', signed=False)
+        if time_of_week is None:
+            time_of_week = self.get_time_of_week()
+        itow = int(time_of_week).to_bytes(4, 'little')
+        body += itow + frac_time_of_week + week + gps_fix + flags
+        body += ecef_x + ecef_y + ecef_z + pos_acc_est
+        body += ecef_vx + ecef_vy + ecef_vz + speed_acc_est
+        body += pos_dop + b'\x00' + num_sv + b'\x00\x00\x00\x00'
+        assert len(body) == (4+52), "Unexpected message body length."
+        cs = self.calc_fletcher_checksum(body)
+        msg['payload'] = sync + body + cs
+        print(f"<<< Sending {self.get_msg_code(msg)} message: {msg['payload']}")
+        print()  # Improve readability of log by adding an empty line
+        self.ser.write(msg['payload'])
+
     def send_nav_timegps(self,
                          time_of_week=None,
                          frac_time_of_week=0,
@@ -640,7 +696,7 @@ class UbxGpsSimulator:
         time_acc_est = int(time_acc_est).to_bytes(4, 'little')
         itow = time_of_week.to_bytes(4, 'little')
         body += itow + frac_time_of_week + week + leap_secs + valid + time_acc_est
-        assert len(body) == (4+16), "Unexpected message body length."
+        assert len(body) == (4+52), "Unexpected message body length."
         cs = self.calc_fletcher_checksum(body)
         msg['payload'] = sync + body + cs
         print(f"<<< Sending {self.get_msg_code(msg)} message: {msg['payload']}")
@@ -682,7 +738,6 @@ class UbxGpsSimulator:
 
     def set_msg_rate(self, msg_class, msg_id, rate):
         # add or overwrite message rate for specific class and ID
-        base_rate_millis = 1000  # assume a base rate of 1 Hz; actually store a "base period" of 1000 ms
         print(f"      Requested rate change: class=0x{msg_class:02X}, ID=0x{msg_id:02X}, rate={rate}")
 
         # check if message class is in dict, otherwise add it
@@ -690,10 +745,10 @@ class UbxGpsSimulator:
             self.message_rates[msg_class] = dict()
         if msg_id not in self.message_rates[msg_class]:
             self.message_rates[msg_class][msg_id] = dict()
-        self.message_rates[msg_class][msg_id]['rate'] = rate * base_rate_millis  # store "rate" (actually period in ms)
+        self.message_rates[msg_class][msg_id]['rate'] = rate  # store "rate"
         # print(f"      Updated message rates to: {self.message_rates}")
 
-    def check_cyclic_tx(self, millis, msg_class, msg_id):
+    def check_cyclic_tx(self, base_rate_count, msg_class, msg_id):
         # message class and ID come in as 'bytes'
         msg_class = int.from_bytes(msg_class, 'little')
         msg_id = int.from_bytes(msg_id, 'little')
@@ -706,20 +761,7 @@ class UbxGpsSimulator:
             return False
         if self.message_rates[msg_class][msg_id]['rate'] == 0:
             return False
-
-        if 'last_cyclic_tx' not in self.message_rates[msg_class][msg_id]:
-            # first transmission; make sure that the next check is true
-            self.message_rates[msg_class][msg_id]['last_cyclic_tx'] = -self.message_rates[msg_class][msg_id]['rate']
-
-        last = self.message_rates[msg_class][msg_id]['last_cyclic_tx']
-        if millis >= last + self.message_rates[msg_class][msg_id]['rate']:
-            print(f"... Going to send message with class=0x{msg_class:02X}, ID=0x{msg_id:02X}; "
-                  f"last={(last-self.startup_time_millis)/1000:.3f} s, "
-                  f"now={(millis-self.startup_time_millis)/1000:.3f} s")
-            self.message_rates[msg_class][msg_id]['last_cyclic_tx'] = millis  # assume we directly send it
-            return True  # ready to send
-        else:
-            return False
+        return base_rate_count % self.message_rates[msg_class][msg_id]['rate'] == 0
 
     def process_cfg_cfg(self, msg):
         assert msg['class'] == b'\x06' and msg['id'] == b'\x09', "Unexpected call."
@@ -969,7 +1011,7 @@ def run():
 
     # blocking time (in seconds) for every blocking read; has influence of the jitter of the periodic transmits
     # (as this script is currently single-threaded and switches between receiving and transmitting)
-    blocking_read_timeout = 0.03
+    blocking_read_timeout = 0.01
 
     parser = argparse.ArgumentParser(description='%(prog)s '
                                                  'Run simulated UBX GPX receiver.')
