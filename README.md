@@ -36,3 +36,7 @@ optional arguments:
 ## Usage examples for OpenBikeSensor (OBS)
 
 See [OpenBikeSensor Usage](./OpenBikeSensor_Usage.md).
+
+## Other projects
+
+- SparkFun's [Saleae Logic 2 High Level Analyzer (HLA) for u-blox UBX protocol](https://github.com/sparkfun/SparkFun_u-blox_UBX_HLA) on github
